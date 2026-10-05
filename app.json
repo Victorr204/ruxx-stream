@@ -1,0 +1,70 @@
+{
+  "expo": {
+    "name": "ruxx stream",
+    "slug": "ruxx-stream",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/images/Android/playstore-icon.png",
+    "scheme": "ruxxstream",
+    "platforms": ["ios", "android", "web"],
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#050505",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ruxxdigital.ruxxstream",
+      "buildNumber": "1",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.ruxxdigital.ruxxstream",
+      "versionCode": 1,
+      "icon": "./assets/images/Android/playstore-icon.png",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/Android/mipmap-xxxhdpi/ic_launcher_foreground.png",
+        "backgroundColor": "#050505"
+      },
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/Android/playstore-icon.png",
+      "backgroundColor": "#050505"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-secure-store",
+      "expo-web-browser",
+      "expo-video",
+      "expo-image-picker",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/backlogo-transparent.png",
+          "imageWidth": 140,
+          "backgroundColor": "#050505",
+          "resizeMode": "contain"
+        }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
+          "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {}
+    }
+  }
+}
