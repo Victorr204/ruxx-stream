@@ -10,7 +10,7 @@
     "web": "expo start --web",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"src/**/*.test.mjs\""
+    "test": "node --test"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
