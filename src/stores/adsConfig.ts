@@ -30,7 +30,7 @@ type AdsConfigState = {
   settings: AdSettings | null;
   units: Partial<Record<AdPlacement, AdUnitRow>>;
   loaded: boolean;
-  load: () => Promise<void>;
+  load: (force?: boolean) => Promise<void>;
   unitFor: (placement: AdPlacement) => string | null;
   isEnabled: (placement: AdPlacement) => boolean;
   intervalSeconds: () => number;
@@ -42,8 +42,10 @@ export const useAdsConfig = create<AdsConfigState>((set, get) => ({
   units: {},
   loaded: false,
 
-  load: async () => {
-    if (get().loaded) return;
+  // force=true re-fetches (the admin console calls it after saving so the
+  // very next player mount picks up new settings without an app restart).
+  load: async (force = false) => {
+    if (get().loaded && !force) return;
     if (!isSupabaseConfigured) {
       set({ loaded: true });
       return;

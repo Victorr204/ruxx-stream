@@ -325,6 +325,18 @@ export default function Profile() {
           />
         </Animated.View>
 
+        {/* ── Admin ── */}
+        {isAdmin && (
+          <Animated.View entering={FadeInDown.delay(410).duration(450)} style={{ gap: 10 }}>
+            <Row
+              icon="shield-checkmark-outline"
+              label="Admin console"
+              value="Catalog, ad settings & download grants"
+              onPress={() => router.push("/admin")}
+            />
+          </Animated.View>
+        )}
+
         {/* ── Sign out ── */}
         <Animated.View entering={FadeInDown.delay(440).duration(450)} style={styles.signOutWrap}>
           <TouchableOpacity style={styles.signOutBtn} onPress={handleSignOut} activeOpacity={0.8}>

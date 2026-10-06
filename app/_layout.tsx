@@ -76,6 +76,7 @@ function AppWrapper() {
         {/* Signed-in area: tabs (home / search / downloads / profile). */}
         <Stack.Protected guard={!!session}>
           <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="admin" />
         </Stack.Protected>
 
         {/* Guest area: hidden while a session is live. */}
