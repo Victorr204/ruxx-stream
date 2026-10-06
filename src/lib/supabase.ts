@@ -13,13 +13,23 @@ export const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "";
 export const isSupabaseConfigured =
   supabaseUrl.startsWith("https://") && supabaseAnonKey.length > 0;
 
+// Static web export renders routes in Node, where AsyncStorage's web
+// implementation touches window.localStorage and crashes the build. Auth
+// simply sees "no stored session" there — the client rehydrates in-browser.
+const hasWindow = typeof window !== "undefined";
+const staticRenderStorage = {
+  getItem: (): Promise<string | null> => Promise.resolve(null),
+  setItem: (): Promise<void> => Promise.resolve(),
+  removeItem: (): Promise<void> => Promise.resolve(),
+};
+
 export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
-        storage: AsyncStorage,
+        storage: hasWindow ? AsyncStorage : staticRenderStorage,
         autoRefreshToken: true,
         persistSession: true,
-        detectSessionInUrl: Platform.OS === "web",
+        detectSessionInUrl: Platform.OS === "web" && hasWindow,
         flowType: "pkce",
       },
     })

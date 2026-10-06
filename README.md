@@ -36,6 +36,15 @@ In the Supabase SQL editor, run in order:
 5. `supabase/migrations/20261006120000_push_tokens.sql` — Expo push token
    registry (per-account, RLS-owned).
 
+CLI alternative (project linked in `supabase/config.toml`): apply everything in
+one shot with
+
+```bash
+npx supabase login
+npx supabase link --project-ref YOUR_PROJECT_REF
+npx supabase db push --project-ref YOUR_PROJECT_REF
+```
+
 ### 4. Deploy the edge functions
 
 ```bash
