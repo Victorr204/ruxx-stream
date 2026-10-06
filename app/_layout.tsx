@@ -7,6 +7,7 @@ import ErrorBoundary from "../utils/ErrorBoundary";
 import AppSplash from "../utils/AppSplash";
 import { setBootSession } from "../utils/bootSession";
 import { useAuthStore } from "../src/stores/auth";
+import { useDownloadsStore } from "../src/stores/downloads";
 
 // Keep the native splash up until the JS AppSplash has painted, so the dark
 // logo screen reads as one continuous splash (same pattern as ruxx prepaid).
@@ -36,6 +37,13 @@ function AppWrapper() {
       // Restore the Supabase session (AsyncStorage-backed) before deciding
       // the first screen, so a warm start never flashes the landing.
       await useAuthStore.getState().initialize();
+
+      // Warm the offline manifest so the player can trust getLocalUri();
+      // never blocks boot (the downloads tab re-calls it, idempotent).
+      useDownloadsStore
+        .getState()
+        .initialize()
+        .catch((error) => console.warn("[downloads] init failed", error));
 
       const { targetUrl } = await resolveBoot();
       setBootSession({ targetUrl });

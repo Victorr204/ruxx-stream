@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   Dimensions,
+  Platform,
 } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
@@ -14,9 +15,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme, GOLD, GOLD_GRADIENT } from "../../context/ThemeContext";
+import AppAlert from "../../utils/AppAlert";
 import { useMovie } from "../../src/hooks/useMovies";
 import { fetchWatchProgress } from "../../src/lib/api";
 import { formatMeta, formatRuntime } from "../../src/lib/format";
+import { useDownloadsStore } from "../../src/stores/downloads";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const BACKDROP_H = Math.min(Math.round(SCREEN_W * 0.56), 380);
@@ -32,6 +35,12 @@ export default function MovieDetail() {
 
   const [resumeState, setResumeState] = useState({ id: null, position: 0 });
   const [playFocused, setPlayFocused] = useState(false);
+  const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
+
+  // No stream URL is resolved here — the store does that only when the
+  // user actually presses Download (each resolve logs playback_events).
+  const dlEntry = useDownloadsStore((s) => (id ? s.entries[id] : undefined));
+  const startDownload = useDownloadsStore((s) => s.startDownload);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,8 +111,68 @@ export default function MovieDetail() {
   const canResume = position > 0;
   const meta = formatMeta(movie);
 
+  const showDownload = Platform.OS !== "web";
+  const dlState = dlEntry?.state ?? null;
+  const dlLabel =
+    dlState === "downloading"
+      ? `Downloading ${Math.round((dlEntry?.progress ?? 0) * 100)}%`
+      : dlState === "ready"
+        ? "Saved for offline"
+        : dlState === "failed"
+          ? "Retry download"
+          : "Download";
+  const dlIcon =
+    dlState === "ready" ? "checkmark-circle" : dlState === "failed" ? "refresh" : "download-outline";
+
+  const handleDownload = async () => {
+    if (dlState && dlState !== "failed") {
+      router.push("/downloads");
+      return;
+    }
+    const result = await startDownload(movie);
+    if (result.ok) return;
+    if (result.reason === "premium-required") {
+      setAlert({
+        visible: true,
+        title: "Premium Plan Required",
+        message: "The Premium plan will unlock ad-free streaming and offline downloads. Stay tuned!",
+        type: "info",
+      });
+    } else if (result.reason === "streaming-only") {
+      setAlert({
+        visible: true,
+        title: "Not Available Offline",
+        message: "This title streams only and cannot be saved for offline viewing.",
+        type: "info",
+      });
+    } else if (result.reason === "offline") {
+      setAlert({
+        visible: true,
+        title: "You are offline",
+        message: "Connect to the internet and try again.",
+        type: "info",
+      });
+    } else if (result.reason === "error") {
+      setAlert({
+        visible: true,
+        title: "Download Failed",
+        message: result.message || "Please try again.",
+        type: "error",
+      });
+    }
+    // busy / cancelled / unsupported: nothing to tell the user.
+  };
+
   return (
     <View style={[styles.root, { backgroundColor: theme.background }]}>
+      <AppAlert
+        visible={alert.visible}
+        title={alert.title}
+        message={alert.message}
+        type={alert.type}
+        theme={theme}
+        onClose={() => setAlert((a) => ({ ...a, visible: false }))}
+      />
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
         {/* ── Backdrop ── */}
         <View style={styles.backdrop}>
@@ -176,6 +245,22 @@ export default function MovieDetail() {
               </Text>
             </LinearGradient>
           </TouchableOpacity>
+
+          {/* ── Download for offline (native only) ── */}
+          {showDownload ? (
+            <TouchableOpacity
+              focusable
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel={`${dlLabel} — ${movie.title}`}
+              onPress={handleDownload}
+              style={[styles.dlBtn, dlState === "ready" && styles.dlBtnReady]}
+              activeOpacity={0.8}
+            >
+              <Ionicons name={dlIcon} size={18} color={GOLD} />
+              <Text style={[styles.dlBtnText, { color: theme.text }]}>{dlLabel}</Text>
+            </TouchableOpacity>
+          ) : null}
 
           {/* ── Description ── */}
           {movie.description ? (
@@ -258,6 +343,19 @@ const styles = StyleSheet.create({
   },
   playGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, height: 54 },
   playText: { color: "#111", fontSize: 16.5, fontWeight: "800" },
+
+  dlBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+    height: 50,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+  dlBtnReady: { borderColor: GOLD, backgroundColor: "rgba(232,184,74,0.08)" },
+  dlBtnText: { fontSize: 15, fontWeight: "800" },
 
   sectionLabel: {
     fontSize: 11.5,

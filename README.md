@@ -82,3 +82,20 @@ Native builds go through EAS (`eas build -p android --profile preview`, see
 AdMob **Google test IDs** are seeded and wired up so development never serves
 real ads. Replace them before launch. Android TV has no AdMob support — the TV
 ad adapter is a no-op.
+
+## Offline downloads
+
+Premium members can save **progressive files only** (mp4 / mov / m4v / webm /
+mkv) — HLS titles stay streaming-only and say so when tapped. The server
+entitlement lives in `download_grants` (written before the transfer starts,
+revoked on failure or removal), while transfer state sits in a local manifest
+(AsyncStorage `ruxx.downloads.v1`) with files under
+`<documents>/ruxx-downloads/`.
+
+- Native only (iOS / Android / TV); the Downloads tab shows
+  "Available on mobile" on web.
+- The movie page's Download button shows live progress; cancel, retry and
+  two-step delete live on the Downloads tab.
+- Playback prefers the local file over the network, never plays ads from a
+  downloaded copy, and falls back to the manifest's movie snapshot when
+  the network is down.

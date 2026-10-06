@@ -199,3 +199,177 @@ export async function fetchWatchProgress(movieId: string): Promise<WatchProgress
   if (error) throw new Error(message(error));
   return (data as WatchProgress) ?? null;
 }
+
+export type StreamSource = {
+  url: string;
+  quality: string;
+  source: "presigned" | "direct" | "local";
+};
+
+/**
+ * Playable URL for a movie. Prefers the sign-stream-url edge function (HLS
+ * renditions + signed CDN URLs); falls back to the raw public stream_url so
+ * local dev without deployed functions still plays. Returns null when the
+ * title has no directly playable source (e.g. R2-only without the function).
+ */
+export async function resolveStreamUrl(movieId: string): Promise<StreamSource | null> {
+  const sb = getSupabase();
+
+  try {
+    const { data, error } = await sb.functions.invoke("sign-stream-url", {
+      body: { movie_id: movieId },
+    });
+    if (!error && data && typeof data.url === "string" && data.url) {
+      return {
+        url: data.url,
+        quality: typeof data.quality === "string" ? data.quality : "free",
+        source: "presigned",
+      };
+    }
+  } catch (e) {
+    console.warn("[playback] sign-stream-url unavailable, trying direct", e);
+  }
+
+  const { data, error } = await sb
+    .from("movies")
+    .select("stream_url")
+    .eq("id", movieId)
+    .eq("is_active", true)
+    .maybeSingle();
+  if (error) throw new Error(message(error));
+
+  const url = (data as { stream_url?: string | null } | null)?.stream_url;
+  return url ? { url, quality: "free", source: "direct" } : null;
+}
+
+/** Manual mid-roll cue points for a title (empty when none are placed). */
+export async function fetchAdMarkers(movieId: string): Promise<number[]> {
+  try {
+    const { data, error } = await getSupabase()
+      .from("ad_markers")
+      .select("at_seconds")
+      .eq("movie_id", movieId)
+      .eq("kind", "mid_roll")
+      .order("at_seconds", { ascending: true });
+    if (error) throw new Error(message(error));
+    return (data ?? []).map((row) => (row as { at_seconds: number }).at_seconds);
+  } catch (e) {
+    console.warn("[playback] ad markers unavailable", e);
+    return [];
+  }
+}
+
+/**
+ * Upsert the resume point for the signed-in user. Fire-and-forget friendly:
+ * failures log a warning instead of surfacing to the player.
+ */
+export async function saveWatchProgress(input: {
+  movieId: string;
+  positionSeconds: number;
+  durationSeconds: number;
+  completed?: boolean;
+}): Promise<void> {
+  const sb = getSupabase();
+  try {
+    const { data: auth } = await sb.auth.getUser();
+    const userId = auth.user?.id;
+    if (!userId) return;
+
+    const { error } = await sb.from("watch_progress").upsert(
+      {
+        user_id: userId,
+        movie_id: input.movieId,
+        position_seconds: Math.max(0, Math.floor(input.positionSeconds)),
+        duration_seconds: Math.max(0, Math.floor(input.durationSeconds)),
+        completed: input.completed ?? false,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id,movie_id" }
+    );
+    if (error) throw new Error(message(error));
+  } catch (e) {
+    console.warn("[playback] progress save failed", e);
+  }
+}
+
+/** Analytics: one row per play/resume/complete (never blocks playback). */
+export async function logPlaybackEvent(input: {
+  movieId: string;
+  event: "play" | "resume" | "complete";
+  positionSeconds: number;
+}): Promise<void> {
+  const sb = getSupabase();
+  try {
+    const { data: auth } = await sb.auth.getUser();
+    const userId = auth.user?.id;
+    if (!userId) return;
+
+    const { error } = await sb.from("playback_events").insert({
+      user_id: userId,
+      movie_id: input.movieId,
+      event: input.event,
+      position_seconds: Math.max(0, Math.floor(input.positionSeconds)),
+    });
+    if (error) throw new Error(message(error));
+  } catch (e) {
+    console.warn("[playback] event log failed", e);
+  }
+}
+
+/** Analytics: ad impression/completion/skip/failure per break. */
+export async function logAdEvent(input: {
+  movieId?: string | null;
+  placement: string;
+  status: "impression" | "completed" | "skipped" | "failed";
+}): Promise<void> {
+  const sb = getSupabase();
+  try {
+    const { data: auth } = await sb.auth.getUser();
+    const userId = auth.user?.id;
+    if (!userId) return;
+
+    const { error } = await sb.from("ad_events").insert({
+      user_id: userId,
+      movie_id: input.movieId ?? null,
+      placement: input.placement,
+      status: input.status,
+    });
+    if (error) throw new Error(message(error));
+  } catch (e) {
+    console.warn("[playback] ad event log failed", e);
+  }
+}
+
+/**
+ * Record the offline-download entitlement before a transfer starts. The
+ * `download_grants_insert_premium` RLS policy re-checks premium server-side,
+ * so a forged client cannot save titles without a premium row. Conflicts are
+ * ignored (no UPDATE is attempted — the table has no update policy).
+ */
+export async function grantDownload(movieId: string): Promise<void> {
+  const sb = getSupabase();
+  const { data: auth } = await sb.auth.getUser();
+  const userId = auth.user?.id;
+  if (!userId) throw new Error("Sign in to download titles");
+
+  const { error } = await sb
+    .from("download_grants")
+    .upsert(
+      { user_id: userId, movie_id: movieId },
+      { onConflict: "user_id,movie_id", ignoreDuplicates: true }
+    );
+  if (error) throw new Error(message(error));
+}
+
+/** Drop the entitlement when a download is removed, cancelled or fails. */
+export async function revokeDownload(movieId: string): Promise<void> {
+  try {
+    const { error } = await getSupabase()
+      .from("download_grants")
+      .delete()
+      .eq("movie_id", movieId);
+    if (error) throw new Error(message(error));
+  } catch (e) {
+    console.warn("[downloads] grant revoke failed", e);
+  }
+}
