@@ -34,6 +34,7 @@ import {
   type DownloadEntry,
 } from "../lib/downloads";
 import type { Movie } from "../lib/types";
+import { notifyDownloadReady } from "../lib/notifications";
 import { useAuthStore } from "./auth";
 
 // Offline downloads: entitlement lives in download_grants (RLS re-checks
@@ -246,6 +247,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
       }
 
       deleteQuietly(plain); // plaintext is gone the moment the seal succeeds
+      const readyEntry = get().entries[movieId];
       patch(movieId, {
         state: "ready",
         progress: 1,
@@ -258,6 +260,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
         plainUri: null,
         error: null,
       });
+      void notifyDownloadReady(readyEntry?.movie?.title ?? "Your download");
       return { ok: true };
     } catch (e) {
       deleteQuietly(enc);

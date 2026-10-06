@@ -8,11 +8,13 @@ import { useAuthStore } from "../../src/stores/auth";
 import CatalogPanel from "../../src/components/admin/CatalogPanel";
 import AdsPanel from "../../src/components/admin/AdsPanel";
 import GrantsPanel from "../../src/components/admin/GrantsPanel";
+import NotifyPanel from "../../src/components/admin/NotifyPanel";
 
 const SEGMENTS = [
   { key: "catalog", label: "Catalog", icon: "film-outline" },
   { key: "ads", label: "Ads", icon: "megaphone-outline" },
   { key: "grants", label: "Grants", icon: "key-outline" },
+  { key: "notify", label: "Notify", icon: "send-outline" },
 ];
 
 export default function AdminConsole() {
@@ -83,6 +85,7 @@ export default function AdminConsole() {
         {segment === "catalog" ? <CatalogPanel /> : null}
         {segment === "ads" ? <AdsPanel /> : null}
         {segment === "grants" ? <GrantsPanel /> : null}
+        {segment === "notify" ? <NotifyPanel /> : null}
       </View>
     </SafeAreaView>
   );

@@ -1,5 +1,14 @@
-import { useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator } from "react-native";
+import { useEffect, useState } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  ActivityIndicator,
+  Platform,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
@@ -11,6 +20,10 @@ import AppAlert from "../../utils/AppAlert";
 import { useAuthStore } from "../../src/stores/auth";
 import { getSupabase } from "../../src/lib/supabase";
 import { checkoutRedirectUrl, startCheckout } from "../../src/lib/api";
+import {
+  notificationPermissionGranted,
+  registerForPush,
+} from "../../src/lib/notifications";
 
 function initialsFor(name, email) {
   const source = (name || email || "").trim();
@@ -78,7 +91,19 @@ export default function Profile() {
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [upgrading, setUpgrading] = useState(false);
+  const [notifGranted, setNotifGranted] = useState(false);
+  const [notifBusy, setNotifBusy] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
+
+  useEffect(() => {
+    let cancelled = false;
+    notificationPermissionGranted().then((granted) => {
+      if (!cancelled) setNotifGranted(granted);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const showAlert = (title, message, type = "info") => setAlert({ visible: true, title, message, type });
 
@@ -183,6 +208,30 @@ export default function Profile() {
       return;
     }
     showAlert("Check Your Email", "A password reset link is on its way to your inbox.", "success");
+  };
+
+  const handleEnableNotifications = async () => {
+    if (notifBusy) return;
+    if (notifGranted) {
+      showAlert("Notifications", "Push notifications are already enabled on this device.");
+      return;
+    }
+    setNotifBusy(true);
+    try {
+      const token = await registerForPush();
+      if (token) {
+        setNotifGranted(true);
+        showAlert("Notifications", "Enabled — you'll get download-ready alerts and announcements.", "success");
+      } else {
+        showAlert(
+          "Notifications Unavailable",
+          "Permission was declined or this device can't register for push yet.",
+          "error"
+        );
+      }
+    } finally {
+      setNotifBusy(false);
+    }
   };
 
   const handleSignOut = async () => {
@@ -308,6 +357,21 @@ export default function Profile() {
                 busy ? <ActivityIndicator size="small" color={GOLD} /> : <Ionicons name="chevron-forward" size={17} color={theme.placeholder} />
               }
             />
+            {Platform.OS !== "web" && (
+              <Row
+                icon={notifGranted ? "notifications" : "notifications-outline"}
+                label={notifGranted ? "Push notifications on" : "Enable notifications"}
+                value={notifGranted ? "Download-ready alerts & announcements" : "Get an alert when a download is ready"}
+                onPress={handleEnableNotifications}
+                right={
+                  notifBusy ? (
+                    <ActivityIndicator size="small" color={GOLD} />
+                  ) : (
+                    <Ionicons name="chevron-forward" size={17} color={theme.placeholder} />
+                  )
+                }
+              />
+            )}
           </Animated.View>
         )}
 

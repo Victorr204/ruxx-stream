@@ -31,6 +31,10 @@ In the Supabase SQL editor, run in order:
    **test** IDs), sample titles on public test streams.
 3. `supabase/migrations/20261006090000_premium_checkout.sql` — Stripe customer
    column, billing_events log, privilege guard amendment for the webhook.
+4. `supabase/migrations/20261006110000_admin_grants_policy.sql` — lets admins
+   grant downloads to any user from the console.
+5. `supabase/migrations/20261006120000_push_tokens.sql` — Expo push token
+   registry (per-account, RLS-owned).
 
 ### 4. Deploy the edge functions
 
@@ -40,6 +44,7 @@ supabase functions deploy r2-upload-ticket
 supabase functions deploy r2-delete
 supabase functions deploy checkout
 supabase functions deploy stripe-webhook
+supabase functions deploy send-push
 ```
 
 ### 5. R2 bucket + secrets
@@ -110,6 +115,29 @@ Native builds go through EAS (`eas build -p android --profile preview`, see
 AdMob **Google test IDs** are seeded and wired up so development never serves
 real ads. Replace them before launch. Android TV has no AdMob support — the TV
 ad adapter is a no-op.
+
+## Admin console
+
+`Profile → Admin console` (admins only, enforced again by RLS):
+
+- **Catalog** — create/edit movies (sources, artwork, genres, premium
+  rendition), hide/show, feature one hero title, two-step delete.
+- **Ads** — pre/mid/banner toggles, mid-roll interval, fail-open, and the
+  AdMob unit ids per placement (saved config is re-fetched by the player).
+- **Grants** — grant/revoke offline downloads for any user.
+- **Notify** — broadcast a push announcement to every registered device.
+
+## Notifications
+
+- Members opt in from `Profile → Enable notifications` (permission + Expo
+  push token saved to `push_tokens` for their account).
+- A local "Download ready" notification fires when a download finishes
+  sealing — no server involved.
+- Admins broadcast via the `send-push` edge function (admin JWT checked in
+  the function; tokens read through the admin RLS policy), chunked against
+  the Expo Push Service.
+- Web has no notification story — the row and the local notification are
+  native-only.
 
 ## Offline downloads
 
