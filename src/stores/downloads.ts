@@ -2,13 +2,35 @@ import { create } from "zustand";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import NetInfo from "@react-native-community/netinfo";
-import { Directory, DownloadTask, File, Paths } from "expo-file-system";
+import * as Crypto from "expo-crypto";
+import * as SecureStore from "expo-secure-store";
+import {
+  Directory,
+  DownloadTask,
+  File,
+  FileMode,
+  Paths,
+  type FileHandle,
+} from "expo-file-system";
 import { grantDownload, resolveStreamUrl, revokeDownload } from "../lib/api";
+import {
+  aadFor,
+  base64ToBytes,
+  bytesToBase64,
+  openFile,
+  sealFile,
+  unwrapFileKey,
+  wrapFileKey,
+  FILE_KEY_SIZE,
+  FILE_NONCE_PREFIX_SIZE,
+  WRAP_NONCE_SIZE,
+} from "../lib/crypto";
 import {
   isDownloadableUrl,
   mediaExtension,
   reconcileManifest,
   resetInterrupted,
+  type CipherInfo,
   type DownloadEntry,
 } from "../lib/downloads";
 import type { Movie } from "../lib/types";
@@ -16,15 +38,18 @@ import { useAuthStore } from "./auth";
 
 // Offline downloads: entitlement lives in download_grants (RLS re-checks
 // premium server-side), transfer state lives in a local manifest, and the
-// video itself sits in the app sandbox under ruxx-downloads/. The manifest is
-// the UI's source of truth — grants are never read back for display, so a
-// grant without a file (crash between insert and transfer) is harmless.
+// video sits in the app sandbox under ruxx-downloads/ sealed with
+// AES-256-GCM (src/lib/crypto.ts). The per-file key is wrapped with a
+// device master key held in expo-secure-store, so the sandbox contents are
+// useless without the keystore. Playback decrypts to a transient copy that
+// is wiped when the player unmounts (expo-video cannot stream ciphertext).
 //
 // Web is unsupported: entry points gate on Platform.OS and the actions below
 // no-op / report "unsupported".
 
 const MANIFEST_KEY = "ruxx.downloads.v1";
 const DIR_NAME = "ruxx-downloads";
+const MASTER_KEY_ALIAS = "ruxx.stream.filekey.v1";
 const PROGRESS_THROTTLE_MS = 250;
 
 export type StartDownloadResult =
@@ -51,6 +76,10 @@ type DownloadsState = {
   removeDownload: (movieId: string) => Promise<void>;
   getLocalUri: (movieId: string) => string | null;
   getEntry: (movieId: string) => DownloadEntry | undefined;
+  /** Decrypt an entry's sealed file for playback; null when not ready. */
+  prepareLocalPlayback: (movieId: string) => Promise<string | null>;
+  /** Wipe the decrypted playback copy once the player goes away. */
+  releaseLocalPlayback: (movieId: string) => Promise<void>;
 };
 
 /** In-flight transfers; not reactive state (progress flows through patch()). */
@@ -74,6 +103,14 @@ function downloadsFile(movieId: string, ext: string): File {
   return new File(Paths.document, DIR_NAME, `${movieId}.${ext}`);
 }
 
+function encryptedFile(movieId: string): File {
+  return new File(Paths.document, DIR_NAME, `${movieId}.enc`);
+}
+
+function playbackFile(movieId: string, ext: string): File {
+  return new File(Paths.document, DIR_NAME, `${movieId}.play.${ext}`);
+}
+
 function deleteQuietly(file: File): void {
   try {
     if (file.exists) file.delete();
@@ -82,11 +119,78 @@ function deleteQuietly(file: File): void {
   }
 }
 
+function deleteEntryFiles(movieId: string, entry: DownloadEntry | undefined): void {
+  if (!entry) return;
+  deleteQuietly(downloadsFile(movieId, entry.ext));
+  deleteQuietly(encryptedFile(movieId));
+  deleteQuietly(playbackFile(movieId, entry.ext));
+}
+
 function friendlyError(error: unknown): string {
   const raw = String((error as Error)?.message ?? error);
   if (/network|fetch|internet|timed?\s*out/i.test(raw)) return "Network error";
   if (/401|403|forbidden|row-level security/i.test(raw)) return "Not allowed";
+  if ((error as Error)?.name === "AbortError") return "Cancelled";
   return raw.length > 140 ? `${raw.slice(0, 137)}…` : raw || "Download failed";
+}
+
+/** Device master key: random, sealed in the OS keystore (SecureStore). */
+async function getOrCreateMasterKey(): Promise<Uint8Array> {
+  const packed = await SecureStore.getItemAsync(MASTER_KEY_ALIAS);
+  if (packed) return base64ToBytes(packed);
+  const key = Crypto.getRandomBytes(FILE_KEY_SIZE);
+  await SecureStore.setItemAsync(MASTER_KEY_ALIAS, bytesToBase64(key), {
+    keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+  });
+  return key;
+}
+
+type RecordTransfer = {
+  mode: "seal" | "open";
+  src: File;
+  dst: File;
+  plainBytes: number;
+  /** Required for "open": the sealed file's size. */
+  cipherBytes?: number;
+  fileKey: Uint8Array;
+  noncePrefix: Uint8Array;
+  movieId: string;
+  onProgress?: (fraction: number) => void;
+};
+
+/** Stream records between two files via chunked FileHandles. */
+async function transferRecords(args: RecordTransfer): Promise<void> {
+  const { mode, src, dst, plainBytes, fileKey, noncePrefix, movieId } = args;
+  const cipherBytes = args.cipherBytes ?? 0;
+  if (mode === "open" && !(cipherBytes > 0)) throw new Error("Offline file is missing");
+
+  deleteQuietly(dst);
+  dst.create({ intermediates: true });
+
+  const srcHandle: FileHandle = src.open(FileMode.ReadOnly);
+  const dstHandle: FileHandle = dst.open(FileMode.WriteOnly);
+  try {
+    const source = { read: (length: number) => srcHandle.readBytes(length) };
+    const sink = { write: (chunk: Uint8Array) => dstHandle.writeBytes(chunk) };
+    const shared = {
+      source,
+      sink,
+      plainBytes,
+      fileKey,
+      noncePrefix,
+      aad: aadFor(movieId),
+      onProgress: args.onProgress,
+      shouldAbort: () => cancelRequests.has(movieId),
+    };
+    if (mode === "seal") {
+      await sealFile(shared);
+    } else {
+      await openFile({ ...shared, cipherBytes });
+    }
+  } finally {
+    srcHandle.close();
+    dstHandle.close();
+  }
 }
 
 export const useDownloadsStore = create<DownloadsState>((set, get) => {
@@ -99,6 +203,74 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
     };
     set({ entries });
     persist(entries);
+  };
+
+  /** Seal a completed plaintext download into its .enc file. */
+  const sealEntry = async (movieId: string, ext: string): Promise<StartDownloadResult> => {
+    const plain = downloadsFile(movieId, ext);
+    const enc = encryptedFile(movieId);
+    try {
+      if (!plain.exists) throw new Error("Downloaded file is missing");
+      const plainBytes = plain.size;
+      if (!(plainBytes > 0)) throw new Error("Downloaded file is empty");
+
+      downloadsDirectory().create({ idempotent: true });
+      const masterKey = await getOrCreateMasterKey();
+      const fileKey = Crypto.getRandomBytes(FILE_KEY_SIZE);
+      const noncePrefix = Crypto.getRandomBytes(FILE_NONCE_PREFIX_SIZE);
+      const cipher: CipherInfo = {
+        key: wrapFileKey(masterKey, fileKey, Crypto.getRandomBytes(WRAP_NONCE_SIZE)),
+        nonce: bytesToBase64(noncePrefix),
+      };
+
+      await transferRecords({
+        mode: "seal",
+        src: plain,
+        dst: enc,
+        plainBytes,
+        fileKey,
+        noncePrefix,
+        movieId,
+        onProgress: (fraction) => {
+          const entry = get().entries[movieId];
+          if (!entry) return;
+          const now = Date.now();
+          if (now - Date.parse(entry.updatedAt) < PROGRESS_THROTTLE_MS) return;
+          patch(movieId, { progress: fraction });
+        },
+      });
+
+      if (!get().entries[movieId] || cancelRequests.has(movieId)) {
+        deleteQuietly(enc);
+        return { ok: false, reason: "cancelled" };
+      }
+
+      deleteQuietly(plain); // plaintext is gone the moment the seal succeeds
+      patch(movieId, {
+        state: "ready",
+        progress: 1,
+        bytesDone: plainBytes,
+        totalBytes: plainBytes,
+        fileSizeBytes: plainBytes,
+        uri: enc.uri,
+        encrypted: true,
+        cipher,
+        plainUri: null,
+        error: null,
+      });
+      return { ok: true };
+    } catch (e) {
+      deleteQuietly(enc);
+      const current = get().entries[movieId];
+      if (!current) {
+        // Cancelled/removed mid-seal — plaintext (if any) was cleaned up too.
+        return { ok: false, reason: "cancelled" };
+      }
+      // Keep the plaintext: a retry re-seals without re-downloading.
+      patch(movieId, { state: "failed", error: friendlyError(e) });
+      void revokeDownload(movieId);
+      return { ok: false, reason: "error", message: friendlyError(e) };
+    }
   };
 
   return {
@@ -121,12 +293,19 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
           if (!entry) return false;
           if (entry.state !== "ready") return true; // retryable, no file required
           try {
-            return downloadsFile(id, entry.ext).exists && !!entry.uri;
+            return !!entry.uri && new File(entry.uri).exists;
           } catch {
             return false;
           }
         });
         entries = resetInterrupted(entries);
+
+        // Cold start: no player is alive, so any decrypted copy is a stray.
+        for (const [id, entry] of Object.entries(entries)) {
+          if (!entry.plainUri) continue;
+          deleteQuietly(playbackFile(id, entry.ext));
+          entries = { ...entries, [id]: { ...entry, plainUri: null } };
+        }
 
         set({ entries, initialized: true });
         persist(entries);
@@ -141,9 +320,10 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
 
       cancelRequests.delete(movie.id);
       const existing = get().entries[movie.id];
-      if (existing?.state === "downloading" || activeTasks.has(movie.id)) {
+      if (existing?.state === "downloading" || existing?.state === "encrypting") {
         return { ok: false, reason: "busy" };
       }
+      if (activeTasks.has(movie.id)) return { ok: false, reason: "busy" };
       if (existing?.state === "ready" && existing.uri) return { ok: true };
 
       const profile = useAuthStore.getState().profile;
@@ -166,6 +346,21 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
         cancelRequests.delete(movie.id);
         void revokeDownload(movie.id);
         return { ok: false, reason: "cancelled" };
+      }
+
+      // A failed seal keeps completed plaintext (bytesDone === totalBytes):
+      // re-seal it instead of spending the user's bandwidth again.
+      const current = get().entries[movie.id];
+      const reusable =
+        current &&
+        current.state === "failed" &&
+        !current.cipher &&
+        current.totalBytes > 0 &&
+        current.bytesDone === current.totalBytes &&
+        downloadsFile(movie.id, current.ext).exists;
+      if (reusable && current) {
+        patch(movie.id, { state: "encrypting", progress: 0, error: null });
+        return sealEntry(movie.id, current.ext);
       }
 
       const source = await resolveStreamUrl(movie.id).catch(() => null);
@@ -199,6 +394,8 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
             uri: null,
             error: null,
             updatedAt: new Date().toISOString(),
+            encrypted: false,
+            plainUri: null,
           },
         },
       });
@@ -209,6 +406,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
         const target = downloadsFile(movie.id, ext);
         // DownloadTask has no idempotent option — clear leftovers ourselves.
         deleteQuietly(target);
+        deleteQuietly(encryptedFile(movie.id));
 
         const task = new DownloadTask(source.url, target, {
           onProgress: (progress) => {
@@ -241,15 +439,15 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
         }
 
         patch(movie.id, {
-          state: "ready",
-          progress: 1,
+          state: "encrypting",
+          progress: 0,
           bytesDone: result.size,
           totalBytes: result.size,
           fileSizeBytes: result.size,
-          uri: result.uri,
+          uri: null,
           error: null,
         });
-        return { ok: true };
+        return sealEntry(movie.id, ext);
       } catch (e) {
         activeTasks.delete(movie.id);
         const current = get().entries[movie.id];
@@ -261,6 +459,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
         }
         // Android streams straight into the destination — clear partial files.
         deleteQuietly(downloadsFile(movie.id, current.ext));
+        deleteQuietly(encryptedFile(movie.id));
         patch(movie.id, { state: "failed", error: friendlyError(e) });
         void revokeDownload(movie.id);
         return { ok: false, reason: "error", message: friendlyError(e) };
@@ -280,8 +479,8 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
           console.warn("[downloads] cancel failed", e);
         }
       }
-      if (entry && entry.state === "downloading") {
-        deleteQuietly(downloadsFile(movieId, entry.ext));
+      if (entry && (entry.state === "downloading" || entry.state === "encrypting")) {
+        deleteEntryFiles(movieId, entry);
         const entries = { ...get().entries };
         delete entries[movieId];
         set({ entries });
@@ -303,7 +502,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
           console.warn("[downloads] cancel failed", e);
         }
       }
-      if (entry) deleteQuietly(downloadsFile(movieId, entry.ext));
+      deleteEntryFiles(movieId, entry);
 
       const entries = { ...get().entries };
       delete entries[movieId];
@@ -318,5 +517,48 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
     },
 
     getEntry: (movieId) => get().entries[movieId],
+
+    prepareLocalPlayback: async (movieId) => {
+      if (Platform.OS === "web") return null;
+      const entry = get().entries[movieId];
+      if (!entry || entry.state !== "ready" || !entry.uri) return null;
+      if (!entry.cipher) return entry.uri; // legacy pre-encryption entry
+
+      const play = playbackFile(movieId, entry.ext);
+      if (entry.plainUri && play.exists) return play.uri;
+
+      const source = new File(entry.uri);
+      if (!source.exists) throw new Error("Offline file is missing");
+
+      const masterKey = await getOrCreateMasterKey();
+      const fileKey = unwrapFileKey(masterKey, entry.cipher.key);
+      const noncePrefix = base64ToBytes(entry.cipher.nonce);
+
+      downloadsDirectory().create({ idempotent: true });
+      await transferRecords({
+        mode: "open",
+        src: source,
+        dst: play,
+        plainBytes: entry.fileSizeBytes,
+        cipherBytes: source.size,
+        fileKey,
+        noncePrefix,
+        movieId,
+      });
+
+      if (!get().entries[movieId]) {
+        deleteQuietly(play);
+        return null;
+      }
+      patch(movieId, { plainUri: play.uri });
+      return play.uri;
+    },
+
+    releaseLocalPlayback: async (movieId) => {
+      const entry = get().entries[movieId];
+      if (!entry?.plainUri) return;
+      deleteQuietly(playbackFile(movieId, entry.ext));
+      if (get().entries[movieId]) patch(movieId, { plainUri: null });
+    },
   };
 });

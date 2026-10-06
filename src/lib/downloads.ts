@@ -5,7 +5,15 @@
 
 import type { Movie } from "./types";
 
-export type DownloadState = "downloading" | "ready" | "failed";
+export type DownloadState = "downloading" | "encrypting" | "ready" | "failed";
+
+/** Wrapped per-file key material (see src/lib/crypto.ts). */
+export type CipherInfo = {
+  /** base64(wrapNonce || GCM-sealed file key) under the device master key. */
+  key: string;
+  /** base64 8-byte nonce prefix for the record nonces. */
+  nonce: string;
+};
 
 /**
  * One saved (or saving) title. Carries a full movie snapshot so the
@@ -15,7 +23,7 @@ export type DownloadEntry = {
   movieId: string;
   movie: Movie;
   state: DownloadState;
-  /** 0..1 while transferring, 1 once ready. */
+  /** 0..1 while transferring/encrypting, 1 once ready. */
   progress: number;
   bytesDone: number;
   /** -1 when the server sent no Content-Length. */
@@ -23,11 +31,17 @@ export type DownloadEntry = {
   fileSizeBytes: number;
   /** Lowercase extension decided from the source URL. */
   ext: string;
-  /** file:// URI once ready, else null. */
+  /** file:// URI once ready, else null (the .enc file when encrypted). */
   uri: string | null;
   error: string | null;
   /** ISO timestamp of the last state change. */
   updatedAt: string;
+  /** True once the on-disk file is sealed (all new downloads are). */
+  encrypted?: boolean;
+  /** Present when `encrypted`; absent for pre-encryption legacy entries. */
+  cipher?: CipherInfo;
+  /** Transient decrypted copy created for playback; cleaned on release. */
+  plainUri?: string | null;
 };
 
 /** Progressive files only — HLS/DASH playlists are text manifests, not video. */
@@ -89,8 +103,10 @@ export function reconcileManifest(
 
 /**
  * After a cold start no transfer is running: anything still marked
- * "downloading" becomes "failed" so the UI offers retry instead of a
- * permanently stuck progress bar.
+ * "downloading" or "encrypting" becomes "failed" so the UI offers retry
+ * instead of a permanently stuck progress bar. A failed encrypt keeps its
+ * completed plaintext (bytesDone === totalBytes), which startDownload
+ * detects and reuses instead of downloading again.
  */
 export function resetInterrupted(
   entries: Record<string, DownloadEntry>
@@ -98,7 +114,7 @@ export function resetInterrupted(
   const next: Record<string, DownloadEntry> = {};
   for (const [id, entry] of Object.entries(entries)) {
     next[id] =
-      entry.state === "downloading"
+      entry.state === "downloading" || entry.state === "encrypting"
         ? { ...entry, state: "failed", error: "Download interrupted" }
         : entry;
   }

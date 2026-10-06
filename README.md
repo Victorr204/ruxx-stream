@@ -127,3 +127,9 @@ revoked on failure or removal), while transfer state sits in a local manifest
 - Playback prefers the local file over the network, never plays ads from a
   downloaded copy, and falls back to the manifest's movie snapshot when
   the network is down.
+- **Encrypted at rest:** on native, sealed files are stored as AES-256-GCM
+  records under `<documents>/ruxx-downloads/<id>.enc` with a per-file key
+  wrapped by a device master key held in the Secure Store
+  (`WHEN_UNLOCKED_THIS_DEVICE_ONLY`). Nothing decryptable sits on disk; the
+  plaintext is only materialized into a transient playback copy while the
+  player is open, and it is wiped on unmount.

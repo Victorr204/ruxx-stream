@@ -123,6 +123,14 @@ export default function Player() {
     };
   }, []);
 
+  // Wipe the decrypted playback copy once this player goes away (or the
+  // route switches titles) so plaintext never outlives the session.
+  useEffect(() => {
+    return () => {
+      void useDownloadsStore.getState().releaseLocalPlayback(movieId);
+    };
+  }, [movieId]);
+
   useEffect(() => {
     loadAds();
   }, [loadAds]);
@@ -153,12 +161,32 @@ export default function Player() {
         await downloads.initialize();
         if (cancelled) return;
 
-        const localUri = downloads.getLocalUri(movieId);
-        if (localUri) {
-          const watch = await fetchWatchProgress(movieId).catch(() => null);
+        const readyEntry = downloads.getEntry(movieId);
+        if (readyEntry?.state === "ready" && readyEntry.uri) {
+          // Local file wins: no sign-stream-url call (and it works offline).
+          // Sealed entries are decrypted to a transient copy first.
+          let localUri = null;
+          try {
+            localUri = await downloads.prepareLocalPlayback(movieId);
+          } catch (decryptError) {
+            if (!cancelled) {
+              setLoadState({
+                id: movieId,
+                error: decryptError?.message || "Offline copy could not be opened.",
+                stream: null,
+                progress: null,
+                markers: [],
+              });
+            }
+            return;
+          }
           if (cancelled) return;
-          applyLoaded({ url: localUri, quality: "offline", source: "local" }, watch, []);
-          return;
+          if (localUri) {
+            const watch = await fetchWatchProgress(movieId).catch(() => null);
+            if (cancelled) return;
+            applyLoaded({ url: localUri, quality: "offline", source: "local" }, watch, []);
+            return;
+          }
         }
 
         const [streamResult, watch, adMarkers] = await Promise.all([

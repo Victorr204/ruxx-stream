@@ -63,12 +63,14 @@ export default function Downloads() {
   };
 
   const renderStatus = (entry) => {
-    if (entry.state === "downloading") {
+    if (entry.state === "downloading" || entry.state === "encrypting") {
       const pct = Math.round(entry.progress * 100);
       const sizeText =
-        entry.totalBytes > 0
-          ? `${pct}% · ${formatBytes(entry.bytesDone)} / ${formatBytes(entry.totalBytes)}`
-          : `${formatBytes(entry.bytesDone)} · starting…`;
+        entry.state === "encrypting"
+          ? `Encrypting… ${pct}%`
+          : entry.totalBytes > 0
+            ? `${pct}% · ${formatBytes(entry.bytesDone)} / ${formatBytes(entry.totalBytes)}`
+            : `${formatBytes(entry.bytesDone)} · starting…`;
       return (
         <View style={styles.progressWrap}>
           <View style={styles.progressTrack}>
@@ -77,7 +79,7 @@ export default function Downloads() {
                 styles.progressFill,
                 {
                   width: `${Math.max(2, Math.round(entry.progress * 100))}%`,
-                  backgroundColor: entry.totalBytes < 0 ? theme.subtitle : GOLD,
+                  backgroundColor: entry.state !== "encrypting" && entry.totalBytes < 0 ? theme.subtitle : GOLD,
                 },
               ]}
             />
@@ -105,7 +107,7 @@ export default function Downloads() {
   };
 
   const renderActions = (entry) => {
-    if (entry.state === "downloading") {
+    if (entry.state === "downloading" || entry.state === "encrypting") {
       return (
         <TouchableOpacity
           style={styles.iconBtn}

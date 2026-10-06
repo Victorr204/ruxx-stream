@@ -116,13 +116,21 @@ export default function MovieDetail() {
   const dlLabel =
     dlState === "downloading"
       ? `Downloading ${Math.round((dlEntry?.progress ?? 0) * 100)}%`
-      : dlState === "ready"
-        ? "Saved for offline"
-        : dlState === "failed"
-          ? "Retry download"
-          : "Download";
+      : dlState === "encrypting"
+        ? `Encrypting ${Math.round((dlEntry?.progress ?? 0) * 100)}%`
+        : dlState === "ready"
+          ? "Saved for offline"
+          : dlState === "failed"
+            ? "Retry download"
+            : "Download";
   const dlIcon =
-    dlState === "ready" ? "checkmark-circle" : dlState === "failed" ? "refresh" : "download-outline";
+    dlState === "ready"
+      ? "checkmark-circle"
+      : dlState === "encrypting"
+        ? "lock-closed"
+        : dlState === "failed"
+          ? "refresh"
+          : "download-outline";
 
   const handleDownload = async () => {
     if (dlState && dlState !== "failed") {
