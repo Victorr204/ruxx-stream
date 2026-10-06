@@ -376,7 +376,7 @@ export async function revokeDownload(movieId: string): Promise<void> {
 }
 
 /**
- * Where Stripe sends the browser back after checkout. Native deep-links
+ * Where Paystack sends the browser back after checkout. Native deep-links
  * into the app; web returns to the current origin (both land on Profile).
  */
 export function checkoutRedirectUrl(): string {
@@ -388,12 +388,12 @@ export function checkoutRedirectUrl(): string {
 }
 
 export type CheckoutResult =
-  | { url: string }
+  | { url: string; reference?: string }
   | { url: null; reason: "not-configured" | "already-premium" | "error"; message?: string };
 
 /**
- * Ask the checkout edge function to create a Stripe Checkout session.
- * Falls back to `not-configured` while Stripe secrets are unset, so the
+ * Ask the checkout edge function to initialize a Paystack transaction.
+ * Falls back to `not-configured` while Paystack secrets are unset, so the
  * app keeps its "Premium is coming soon" state on fresh installs.
  */
 export async function startCheckout(): Promise<CheckoutResult> {
@@ -405,7 +405,12 @@ export async function startCheckout(): Promise<CheckoutResult> {
     if (error) return { url: null, reason: "error", message: error.message };
     if (data?.configured === false) return { url: null, reason: "not-configured" };
     if (data?.error === "already_premium") return { url: null, reason: "already-premium" };
-    if (typeof data?.url === "string" && data.url) return { url: data.url };
+    if (typeof data?.url === "string" && data.url) {
+      return {
+        url: data.url,
+        reference: typeof data?.reference === "string" ? data.reference : undefined,
+      };
+    }
     return {
       url: null,
       reason: "error",
@@ -419,6 +424,32 @@ export async function startCheckout(): Promise<CheckoutResult> {
       url: null,
       reason: "error",
       message: e instanceof Error ? e.message : "Could not start checkout right now.",
+    };
+  }
+}
+
+export type CheckoutVerification = { premium: boolean; status: string; message?: string };
+
+/**
+ * Confirm a Paystack reference after the browser returns. The edge function
+ * verifies the transaction server-to-server and grants premium instantly;
+ * the webhook remains the source of truth for renewals and cancellations.
+ */
+export async function verifyCheckout(reference: string): Promise<CheckoutVerification> {
+  try {
+    const { data, error } = await getSupabase().functions.invoke("paystack-verify", {
+      body: { reference },
+    });
+    if (error) return { premium: false, status: "error", message: error.message };
+    return {
+      premium: data?.premium === true,
+      status: typeof data?.status === "string" ? data.status : "unknown",
+    };
+  } catch (e) {
+    return {
+      premium: false,
+      status: "error",
+      message: e instanceof Error ? e.message : undefined,
     };
   }
 }

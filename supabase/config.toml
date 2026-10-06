@@ -415,8 +415,8 @@ enabled = true
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":180,\"commaStyle\":\"trailing\"}"
 
 # --- ruxx stream functions ---
-# stripe-webhook is called by Stripe with an HMAC signature only - there is no
-# Supabase JWT to verify, so the gateway check must be off for this one.
-# (Deploy: supabase functions deploy stripe-webhook --no-verify-jwt)
-[functions.stripe-webhook]
+# paystack-webhook is called by Paystack with an HMAC-SHA512 signature only -
+# there is no Supabase JWT to verify, so the gateway check must be off for
+# this one. (Deploy: supabase functions deploy paystack-webhook --no-verify-jwt)
+[functions.paystack-webhook]
 verify_jwt = false

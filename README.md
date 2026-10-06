@@ -29,12 +29,16 @@ In the Supabase SQL editor, run in order:
    RLS policies, artwork storage bucket, admin RPCs.
 2. `supabase/migrations/20261005090100_seed.sql` — genres, ad units (Google
    **test** IDs), sample titles on public test streams.
-3. `supabase/migrations/20261006090000_premium_checkout.sql` — Stripe customer
-   column, billing_events log, privilege guard amendment for the webhook.
+3. `supabase/migrations/20261006090000_premium_checkout.sql` — billing
+   customer column, billing_events log, privilege guard amendment for the
+   webhook.
 4. `supabase/migrations/20261006110000_admin_grants_policy.sql` — lets admins
    grant downloads to any user from the console.
 5. `supabase/migrations/20261006120000_push_tokens.sql` — Expo push token
    registry (per-account, RLS-owned).
+6. `supabase/migrations/20261006130000_paystack_billing.sql` — renames the
+   Stripe-era billing columns to generic names and recreates the privilege
+   guard against them.
 
 CLI alternative (project linked in `supabase/config.toml`): apply everything in
 one shot with
@@ -52,7 +56,8 @@ supabase functions deploy sign-stream-url
 supabase functions deploy r2-upload-ticket
 supabase functions deploy r2-delete
 supabase functions deploy checkout
-supabase functions deploy stripe-webhook
+supabase functions deploy paystack-verify
+supabase functions deploy paystack-webhook --no-verify-jwt
 supabase functions deploy send-push
 ```
 
@@ -84,29 +89,37 @@ update public.profiles
 where id = (select id from auth.users where email = 'you@example.com');
 ```
 
-### 7. Stripe premium checkout (optional)
+### 7. Paystack premium checkout (optional)
 
-Premium purchases run through Stripe Checkout. Until the secrets are set,
+Premium purchases run through Paystack — cards, bank transfer and USSD all
+work in Nigeria without an international card. Until the secrets are set,
 the Upgrade row keeps its "Premium is coming soon" state.
 
-1. Create a product in Stripe with a monthly recurring price; copy the price id.
-2. Add a webhook endpoint pointing at
-   `https://YOUR_PROJECT_REF.supabase.co/functions/v1/stripe-webhook`
-   with events `checkout.session.completed`,
-   `customer.subscription.created`, `customer.subscription.updated`,
-   `customer.subscription.deleted`; copy its signing secret.
+1. Create a monthly plan (₦1,500 / `150000` kobo) in the Paystack dashboard
+   or via the API; copy the plan code (`PLN_…`).
+2. Add a webhook endpoint in Paystack pointing at
+   `https://YOUR_PROJECT_REF.supabase.co/functions/v1/paystack-webhook`
+   (Paystack signs with your secret key — no separate signing secret).
 3. Give the functions their credentials (never put these in the app):
 
 ```bash
 supabase secrets set \
-  STRIPE_SECRET_KEY=sk_test_your_key \
-  STRIPE_PRICE_ID=price_your_price \
-  STRIPE_WEBHOOK_SECRET=whsec_your_secret
+  PAYSTACK_SECRET_KEY=sk_test_your_key \
+  PAYSTACK_PLAN_CODE=PLN_your_plan \
+  PAYSTACK_PLAN_AMOUNT=150000
 ```
 
-The `checkout` function creates the session for the signed-in user; the
-webhook verifies the signature, logs each event id once into
-`billing_events`, and flips `profiles.is_premium` as the service role.
+The `checkout` function initializes the transaction for the signed-in user
+and returns the hosted authorization URL; after the browser returns the app
+calls `paystack-verify` for an instant grant, while `paystack-webhook`
+stays the source of truth — it verifies the `x-paystack-signature` HMAC,
+logs each raw payload once into `billing_events`, and flips
+`profiles.is_premium` as the service role.
+
+Google Play / App Store in-app billing come later (Phases 11–12); their
+secret placeholders live in `.env.example` until the developer accounts
+exist. Everywhere else — web, smart TV browser, sideloaded Android — falls
+back to Paystack.
 
 ## Commands
 

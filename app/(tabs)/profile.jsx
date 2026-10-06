@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -12,14 +12,14 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useTheme, GOLD, GOLD_GRADIENT } from "../../context/ThemeContext";
 import AppAlert from "../../utils/AppAlert";
 import { useAuthStore } from "../../src/stores/auth";
 import { getSupabase } from "../../src/lib/supabase";
-import { checkoutRedirectUrl, startCheckout } from "../../src/lib/api";
+import { checkoutRedirectUrl, startCheckout, verifyCheckout } from "../../src/lib/api";
 import {
   notificationPermissionGranted,
   registerForPush,
@@ -31,6 +31,17 @@ function initialsFor(name, email) {
   const parts = source.split(/[\s@._-]+/).filter(Boolean);
   return (parts[0]?.[0] ?? "").toUpperCase() + (parts[1]?.[0] ?? "").toUpperCase();
 }
+
+/** Reads `key` out of a possibly deep-link URL; returns "" when absent. */
+function queryParam(url, key) {
+  if (!url) return "";
+  const match = url.match(new RegExp(`[?&]${key}=([^&#]*)`));
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+// One verification per reference across every entry point (auth-session
+// return, cold-start deep link, web full-page redirect).
+let verifiedWebReference = "";
 
 function StatCard({ label, value }) {
   const { theme } = useTheme();
@@ -95,6 +106,8 @@ export default function Profile() {
   const [notifBusy, setNotifBusy] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
 
+  const { reference: referenceParam } = useLocalSearchParams();
+
   useEffect(() => {
     let cancelled = false;
     notificationPermissionGranted().then((granted) => {
@@ -105,10 +118,36 @@ export default function Profile() {
     };
   }, []);
 
-  const showAlert = (title, message, type = "info") => setAlert({ visible: true, title, message, type });
+  const showAlert = useCallback(
+    (title, message, type = "info") => setAlert({ visible: true, title, message, type }),
+    []
+  );
 
-  const announcePremium = () =>
-    showAlert("Welcome to Premium", "Ad-free streaming and offline downloads are unlocked.", "success");
+  const announcePremium = useCallback(
+    () =>
+      showAlert("Welcome to Premium", "Ad-free streaming and offline downloads are unlocked.", "success"),
+    [showAlert]
+  );
+
+  // Web returns from Paystack by navigating this route with ?reference=…
+  // (full-page redirect). Confirm it once; premium lands instantly.
+  useEffect(() => {
+    const ref = Array.isArray(referenceParam) ? referenceParam[0] : referenceParam;
+    if (!ref || ref === verifiedWebReference) return undefined;
+    verifiedWebReference = ref;
+    let cancelled = false;
+    verifyCheckout(ref).then((verification) => {
+      if (cancelled) return;
+      if (verification.premium) {
+        refreshProfile().then(() => {
+          if (!cancelled) announcePremium();
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [referenceParam, refreshProfile, announcePremium]);
 
   const handleUpgrade = async () => {
     if (upgrading) return;
@@ -133,13 +172,32 @@ export default function Profile() {
 
       const redirectUrl = checkoutRedirectUrl();
       const outcome = await WebBrowser.openAuthSessionAsync(result.url, redirectUrl);
+      const returnedUrl = outcome.type === "success" && typeof outcome.url === "string" ? outcome.url : "";
+      const reference = queryParam(returnedUrl, "reference");
+      if (reference) {
+        verifiedWebReference = reference;
+        const verification = await verifyCheckout(reference);
+        if (verification.premium) {
+          await refreshProfile();
+          announcePremium();
+          return;
+        }
+        if (verification.status === "failed" || verification.status === "abandoned") {
+          showAlert(
+            "Payment Not Completed",
+            "You were not charged. Tap Upgrade again when you're ready.",
+            "error"
+          );
+          return;
+        }
+      }
       await refreshProfile();
       if (useAuthStore.getState().profile?.is_premium) {
         announcePremium();
         return;
       }
       if (outcome.type === "success") {
-        // The Stripe webhook may land just after the redirect — poll briefly.
+        // The Paystack webhook may land just after the redirect — poll briefly.
         for (let attempt = 0; attempt < 4; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 1500));
           await refreshProfile();
