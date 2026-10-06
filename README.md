@@ -29,6 +29,8 @@ In the Supabase SQL editor, run in order:
    RLS policies, artwork storage bucket, admin RPCs.
 2. `supabase/migrations/20261005090100_seed.sql` — genres, ad units (Google
    **test** IDs), sample titles on public test streams.
+3. `supabase/migrations/20261006090000_premium_checkout.sql` — Stripe customer
+   column, billing_events log, privilege guard amendment for the webhook.
 
 ### 4. Deploy the edge functions
 
@@ -36,6 +38,8 @@ In the Supabase SQL editor, run in order:
 supabase functions deploy sign-stream-url
 supabase functions deploy r2-upload-ticket
 supabase functions deploy r2-delete
+supabase functions deploy checkout
+supabase functions deploy stripe-webhook
 ```
 
 ### 5. R2 bucket + secrets
@@ -61,6 +65,30 @@ update public.profiles
   set role = 'admin'
 where id = (select id from auth.users where email = 'you@example.com');
 ```
+
+### 7. Stripe premium checkout (optional)
+
+Premium purchases run through Stripe Checkout. Until the secrets are set,
+the Upgrade row keeps its "Premium is coming soon" state.
+
+1. Create a product in Stripe with a monthly recurring price; copy the price id.
+2. Add a webhook endpoint pointing at
+   `https://YOUR_PROJECT_REF.supabase.co/functions/v1/stripe-webhook`
+   with events `checkout.session.completed`,
+   `customer.subscription.created`, `customer.subscription.updated`,
+   `customer.subscription.deleted`; copy its signing secret.
+3. Give the functions their credentials (never put these in the app):
+
+```bash
+supabase secrets set \
+  STRIPE_SECRET_KEY=sk_test_your_key \
+  STRIPE_PRICE_ID=price_your_price \
+  STRIPE_WEBHOOK_SECRET=whsec_your_secret
+```
+
+The `checkout` function creates the session for the signed-in user; the
+webhook verifies the signature, logs each event id once into
+`billing_events`, and flips `profiles.is_premium` as the service role.
 
 ## Commands
 

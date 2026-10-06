@@ -4,11 +4,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useTheme, GOLD, GOLD_GRADIENT } from "../../context/ThemeContext";
 import AppAlert from "../../utils/AppAlert";
 import { useAuthStore } from "../../src/stores/auth";
 import { getSupabase } from "../../src/lib/supabase";
+import { checkoutRedirectUrl, startCheckout } from "../../src/lib/api";
 
 function initialsFor(name, email) {
   const source = (name || email || "").trim();
@@ -75,9 +77,64 @@ export default function Profile() {
   const [draftName, setDraftName] = useState("");
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [upgrading, setUpgrading] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
 
   const showAlert = (title, message, type = "info") => setAlert({ visible: true, title, message, type });
+
+  const announcePremium = () =>
+    showAlert("Welcome to Premium", "Ad-free streaming and offline downloads are unlocked.", "success");
+
+  const handleUpgrade = async () => {
+    if (upgrading) return;
+    setUpgrading(true);
+    try {
+      const result = await startCheckout();
+      if (!result.url) {
+        if (result.reason === "not-configured") {
+          showAlert(
+            "Premium is Coming Soon",
+            "The Premium plan will unlock ad-free streaming and offline downloads. Stay tuned!",
+            "info"
+          );
+        } else if (result.reason === "already-premium") {
+          await refreshProfile();
+          announcePremium();
+        } else {
+          showAlert("Checkout Failed", result.message || "Please try again later.", "error");
+        }
+        return;
+      }
+
+      const redirectUrl = checkoutRedirectUrl();
+      const outcome = await WebBrowser.openAuthSessionAsync(result.url, redirectUrl);
+      await refreshProfile();
+      if (useAuthStore.getState().profile?.is_premium) {
+        announcePremium();
+        return;
+      }
+      if (outcome.type === "success") {
+        // The Stripe webhook may land just after the redirect — poll briefly.
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          await refreshProfile();
+          if (useAuthStore.getState().profile?.is_premium) {
+            announcePremium();
+            return;
+          }
+        }
+        showAlert(
+          "Payment Processing",
+          "Your payment is being confirmed. Premium activates within a minute — reopen Profile to see it.",
+          "info"
+        );
+      }
+    } catch (e) {
+      showAlert("Checkout Failed", e instanceof Error ? e.message : "Please try again later.", "error");
+    } finally {
+      setUpgrading(false);
+    }
+  };
 
   const displayName = profile?.display_name || session?.user?.user_metadata?.display_name || "";
   const email = session?.user?.email ?? "";
@@ -263,16 +320,8 @@ export default function Profile() {
             icon="star-outline"
             label={isPremium ? "Premium active" : "Upgrade to Premium"}
             value={isPremium ? "Ad-free streams + offline downloads" : "Ad-free streams, downloads & more"}
-            onPress={
-              isPremium
-                ? undefined
-                : () =>
-                    showAlert(
-                      "Premium is Coming Soon",
-                      "The Premium plan will unlock ad-free streaming and offline downloads. Stay tuned!",
-                      "info"
-                    )
-            }
+            onPress={isPremium ? undefined : handleUpgrade}
+            right={upgrading ? <ActivityIndicator size="small" color={GOLD} /> : undefined}
           />
         </Animated.View>
 

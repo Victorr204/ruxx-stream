@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 import { getSupabase } from "./supabase";
 import type { ContinueItem, Genre, HomeFeed, HomeRow, Movie, WatchProgress } from "./types";
 
@@ -371,5 +372,53 @@ export async function revokeDownload(movieId: string): Promise<void> {
     if (error) throw new Error(message(error));
   } catch (e) {
     console.warn("[downloads] grant revoke failed", e);
+  }
+}
+
+/**
+ * Where Stripe sends the browser back after checkout. Native deep-links
+ * into the app; web returns to the current origin (both land on Profile).
+ */
+export function checkoutRedirectUrl(): string {
+  if (Platform.OS !== "web") return "ruxxstream://profile";
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return `${window.location.origin}/profile`;
+  }
+  return `${process.env.EXPO_PUBLIC_SITE_URL ?? ""}/profile`;
+}
+
+export type CheckoutResult =
+  | { url: string }
+  | { url: null; reason: "not-configured" | "already-premium" | "error"; message?: string };
+
+/**
+ * Ask the checkout edge function to create a Stripe Checkout session.
+ * Falls back to `not-configured` while Stripe secrets are unset, so the
+ * app keeps its "Premium is coming soon" state on fresh installs.
+ */
+export async function startCheckout(): Promise<CheckoutResult> {
+  const sb = getSupabase();
+  try {
+    const { data, error } = await sb.functions.invoke("checkout", {
+      body: { redirect_url: checkoutRedirectUrl() },
+    });
+    if (error) return { url: null, reason: "error", message: error.message };
+    if (data?.configured === false) return { url: null, reason: "not-configured" };
+    if (data?.error === "already_premium") return { url: null, reason: "already-premium" };
+    if (typeof data?.url === "string" && data.url) return { url: data.url };
+    return {
+      url: null,
+      reason: "error",
+      message:
+        typeof data?.error === "string" && data.error
+          ? data.error
+          : "Could not start checkout right now.",
+    };
+  } catch (e) {
+    return {
+      url: null,
+      reason: "error",
+      message: e instanceof Error ? e.message : "Could not start checkout right now.",
+    };
   }
 }
