@@ -1,10 +1,16 @@
-// Cloudflare R2 (S3-compatible) request signing for Supabase Edge Functions.
+// S3-compatible object storage (Backblaze B2) request signing for Supabase
+// Edge Functions. Signing is unchanged from the original Cloudflare R2
+// implementation — endpoint and region now come from the environment so any
+// S3-compatible provider can be dropped in via function secrets.
 //
 // SigV4 construction mirrors the reference `aws4` implementation:
 //   [method, uri, query, canonicalHeaders + "\n", signedHeaders, payloadHash].join("\n")
 
-export interface R2Config {
-  accountId: string;
+export interface StorageConfig {
+  /** Host only, no scheme or path — e.g. s3.eu-central-003.backblazeb2.com */
+  endpoint: string;
+  /** Credential-scope region — e.g. eu-central-003 (R2 used "auto"). */
+  region: string;
   accessKeyId: string;
   secretAccessKey: string;
   bucket: string;
@@ -14,17 +20,29 @@ const encoder = new TextEncoder();
 export const EMPTY_SHA256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-export function r2ConfigFromEnv(): R2Config {
-  const accountId = Deno.env.get("R2_ACCOUNT_ID");
-  const accessKeyId = Deno.env.get("R2_ACCESS_KEY_ID");
-  const secretAccessKey = Deno.env.get("R2_SECRET_ACCESS_KEY");
-  const bucket = Deno.env.get("R2_BUCKET_NAME");
-  if (!accountId || !accessKeyId || !secretAccessKey || !bucket) {
+/** Accepts `host`, `https://host` or `https://host/anything` → `host`. */
+export function normalizeEndpoint(value: string): string {
+  return value.trim().replace(/^https?:\/\//, "").split("/")[0] ?? "";
+}
+
+export function storageConfigFromEnv(): StorageConfig {
+  const endpoint = Deno.env.get("S3_ENDPOINT");
+  const region = Deno.env.get("S3_REGION");
+  const accessKeyId = Deno.env.get("S3_ACCESS_KEY_ID");
+  const secretAccessKey = Deno.env.get("S3_SECRET_ACCESS_KEY");
+  const bucket = Deno.env.get("S3_BUCKET");
+  if (!endpoint || !region || !accessKeyId || !secretAccessKey || !bucket) {
     throw new Error(
-      "R2 is not configured — set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME as function secrets.",
+      "Storage is not configured — set S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET as function secrets.",
     );
   }
-  return { accountId, accessKeyId, secretAccessKey, bucket };
+  return {
+    endpoint: normalizeEndpoint(endpoint),
+    region,
+    accessKeyId,
+    secretAccessKey,
+    bucket,
+  };
 }
 
 /** encodeURIComponent plus the extra RFC 3986 unreserved-char escaping. */
@@ -114,12 +132,8 @@ export async function deriveSigningKey(
   return await hmacSha256(kService, "aws4_request");
 }
 
-export function hostFor(cfg: R2Config): string {
-  return `${cfg.accountId}.r2.cloudflarestorage.com`;
-}
-
 function presignQuery(
-  cfg: R2Config,
+  cfg: StorageConfig,
   scope: string,
   amzDate: string,
   expiresInSeconds: number,
@@ -134,16 +148,16 @@ function presignQuery(
 }
 
 async function presign(
-  cfg: R2Config,
+  cfg: StorageConfig,
   method: "GET" | "PUT",
   objectKey: string,
   expiresInSeconds: number,
   now = new Date(),
 ): Promise<string> {
-  const host = hostFor(cfg);
+  const host = cfg.endpoint;
   const amzDate = amzDateNow(now);
   const dateStamp = amzDate.slice(0, 8);
-  const scope = `${dateStamp}/auto/s3/aws4_request`;
+  const scope = `${dateStamp}/${cfg.region}/s3/aws4_request`;
   const uri = "/" + encodePath(`${cfg.bucket}/${objectKey}`);
   const query = presignQuery(cfg, scope, amzDate, expiresInSeconds);
 
@@ -156,7 +170,7 @@ async function presign(
     payloadHash: "UNSIGNED-PAYLOAD",
   });
   const stringToSign = await buildStringToSign(amzDate, scope, canonical);
-  const key = await deriveSigningKey(cfg.secretAccessKey, dateStamp, "auto", "s3");
+  const key = await deriveSigningKey(cfg.secretAccessKey, dateStamp, cfg.region, "s3");
   const signature = toHex(await hmacSha256(key, stringToSign));
 
   return `https://${host}${uri}?${query}&X-Amz-Signature=${signature}`;
@@ -164,7 +178,7 @@ async function presign(
 
 /** Short-lived read URL for a video object (default 6 hours). */
 export function presignGetObject(
-  cfg: R2Config,
+  cfg: StorageConfig,
   objectKey: string,
   expiresInSeconds = 21600,
   now = new Date(),
@@ -174,7 +188,7 @@ export function presignGetObject(
 
 /** Short-lived upload URL used by the admin panel (default 1 hour). */
 export function presignPutObject(
-  cfg: R2Config,
+  cfg: StorageConfig,
   objectKey: string,
   expiresInSeconds = 3600,
   now = new Date(),
@@ -182,16 +196,16 @@ export function presignPutObject(
   return presign(cfg, "PUT", objectKey, expiresInSeconds, now);
 }
 
-/** Header-signed DELETE (presigned DELETE is not supported by S3/R2). */
+/** Header-signed DELETE (presigned DELETE is not supported by S3). */
 export async function deleteObject(
-  cfg: R2Config,
+  cfg: StorageConfig,
   objectKey: string,
   now = new Date(),
 ): Promise<{ ok: boolean; status: number; body: string }> {
-  const host = hostFor(cfg);
+  const host = cfg.endpoint;
   const amzDate = amzDateNow(now);
   const dateStamp = amzDate.slice(0, 8);
-  const scope = `${dateStamp}/auto/s3/aws4_request`;
+  const scope = `${dateStamp}/${cfg.region}/s3/aws4_request`;
   const uri = "/" + encodePath(`${cfg.bucket}/${objectKey}`);
   const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
 
@@ -208,7 +222,7 @@ export async function deleteObject(
     payloadHash: EMPTY_SHA256,
   });
   const stringToSign = await buildStringToSign(amzDate, scope, canonical);
-  const key = await deriveSigningKey(cfg.secretAccessKey, dateStamp, "auto", "s3");
+  const key = await deriveSigningKey(cfg.secretAccessKey, dateStamp, cfg.region, "s3");
   const signature = toHex(await hmacSha256(key, stringToSign));
 
   const res = await fetch(`https://${host}${uri}`, {

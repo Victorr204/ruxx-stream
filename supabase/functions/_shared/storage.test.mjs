@@ -8,18 +8,20 @@ import {
   encodePath,
   encodeRfc3986,
   hmacSha256,
+  normalizeEndpoint,
   presignGetObject,
   presignPutObject,
   toHex,
-} from "./r2.ts";
+} from "./storage.ts";
 
-// Golden vectors for R2 SigV4 presigning. The expected signatures below were
+// Golden vectors for S3 SigV4 presigning. The expected signatures below were
 // produced by cross-checking our primitives against the reference `aws4`
 // library (header-signed and signQuery/presign modes) with the same fixed
 // inputs, so a regression here means we silently broke URL expiry in prod.
 
 const CFG = {
-  accountId: "acc123",
+  endpoint: "acc123.r2.cloudflarestorage.com",
+  region: "auto",
   accessKeyId: "AKIDEXAMPLE",
   secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
   bucket: "ruxx-stream",
@@ -110,4 +112,10 @@ test("signing key derivation reproduces the golden signature", async () => {
 test("encodePath keeps slashes but escapes reserved characters", () => {
   assert.equal(encodePath("ruxx-stream/my movie (1).mp4"), "ruxx-stream/my%20movie%20%281%29.mp4");
   assert.equal(encodeRfc3986("a/b c"), "a%2Fb%20c");
+});
+
+test("normalizeEndpoint strips schemes and paths", () => {
+  assert.equal(normalizeEndpoint("s3.eu-central-003.backblazeb2.com"), "s3.eu-central-003.backblazeb2.com");
+  assert.equal(normalizeEndpoint("https://s3.eu-central-003.backblazeb2.com"), "s3.eu-central-003.backblazeb2.com");
+  assert.equal(normalizeEndpoint("https://s3.eu-central-003.backblazeb2.com/ruxx-stream/"), "s3.eu-central-003.backblazeb2.com");
 });

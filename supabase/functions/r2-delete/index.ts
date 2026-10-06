@@ -1,8 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, preflight } from "../_shared/cors.ts";
-import { deleteObject, r2ConfigFromEnv } from "../_shared/r2.ts";
+import { deleteObject, storageConfigFromEnv } from "../_shared/storage.ts";
 
-// Admin-only: removes a video object from R2. The caller must also update or
+// Admin-only: removes a video object from storage. The caller must also update or
 // delete the movie row afterwards (done by the admin panel).
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -48,7 +48,7 @@ Deno.serve(async (req) => {
       return json({ error: `key must start with ${KEY_PREFIX}` }, 400);
     }
 
-    const result = await deleteObject(r2ConfigFromEnv(), key);
+    const result = await deleteObject(storageConfigFromEnv(), key);
     return json({ ok: result.ok, status: result.status, key }, result.ok ? 200 : 502);
   } catch (e) {
     console.error("[r2-delete]", e);

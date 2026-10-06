@@ -1,7 +1,7 @@
 # ruxx stream
 
 Multi-platform movie streaming app (iOS, Android, Android TV, Web/PWA) built with
-Expo SDK 57, Supabase (free tier) and Cloudflare R2 for video storage.
+Expo SDK 57, Supabase (free tier) and Backblaze B2 for video storage.
 
 > Content note: only upload media you own or are licensed to distribute.
 
@@ -56,19 +56,23 @@ supabase functions deploy stripe-webhook
 supabase functions deploy send-push
 ```
 
-### 5. R2 bucket + secrets
+### 5. Backblaze B2 bucket + secrets
 
-1. Create a Cloudflare R2 bucket (e.g. `ruxx-stream`) and an API token with
-   object read/write/delete on that bucket.
+1. Create a Backblaze B2 account (no credit card required — first 10GB free),
+   create a bucket (e.g. `ruxx-stream`), and an application key with
+   `listFiles, readFiles, writeFiles, deleteFiles` on that bucket.
 2. Give the functions their credentials (never put these in the app):
 
 ```bash
 supabase secrets set \
-  R2_ACCOUNT_ID=your_account_id \
-  R2_ACCESS_KEY_ID=your_access_key_id \
-  R2_SECRET_ACCESS_KEY=your_secret_access_key \
-  R2_BUCKET_NAME=ruxx-stream
+  S3_ENDPOINT=s3.eu-central-003.backblazeb2.com \
+  S3_REGION=eu-central-003 \
+  S3_ACCESS_KEY_ID=your_application_key_id \
+  S3_SECRET_ACCESS_KEY=your_application_key \
+  S3_BUCKET=ruxx-stream
 ```
+
+Any S3-compatible provider works — set `S3_ENDPOINT`/`S3_REGION` to match it.
 
 ### 6. Promote yourself to admin
 

@@ -1,9 +1,9 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, preflight } from "../_shared/cors.ts";
-import { presignPutObject, r2ConfigFromEnv } from "../_shared/r2.ts";
+import { presignPutObject, storageConfigFromEnv } from "../_shared/storage.ts";
 
-// Admin-only: returns a presigned R2 PUT URL so the browser can upload a
-// movie file straight to storage (no R2 credentials ever reach the client).
+// Admin-only: returns a presigned PUT URL so the browser can upload a
+// movie file straight to storage (no storage credentials ever reach the client).
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
@@ -74,7 +74,7 @@ Deno.serve(async (req) => {
 
     const safeName = filename.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-80) || `upload.${ext}`;
     const key = `videos/${crypto.randomUUID()}-${safeName}`;
-    const uploadUrl = await presignPutObject(r2ConfigFromEnv(), key, UPLOAD_TTL_SECONDS);
+    const uploadUrl = await presignPutObject(storageConfigFromEnv(), key, UPLOAD_TTL_SECONDS);
 
     return json({
       key,

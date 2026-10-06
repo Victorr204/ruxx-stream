@@ -1,6 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, preflight } from "../_shared/cors.ts";
-import { presignGetObject, r2ConfigFromEnv } from "../_shared/r2.ts";
+import { presignGetObject, storageConfigFromEnv } from "../_shared/storage.ts";
 
 // Mints a short-lived playback URL for one movie.
 //
@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
     if (premium) {
       quality = "premium";
       if (premium.r2_key) {
-        url = await presignGetObject(r2ConfigFromEnv(), premium.r2_key, STREAM_TTL_SECONDS);
+        url = await presignGetObject(storageConfigFromEnv(), premium.r2_key, STREAM_TTL_SECONDS);
       } else {
         url = premium.stream_url;
       }
@@ -70,7 +70,7 @@ Deno.serve(async (req) => {
 
     if (!url) {
       if (movie.r2_key_free) {
-        url = await presignGetObject(r2ConfigFromEnv(), movie.r2_key_free, STREAM_TTL_SECONDS);
+        url = await presignGetObject(storageConfigFromEnv(), movie.r2_key_free, STREAM_TTL_SECONDS);
       } else {
         url = movie.stream_url;
       }
