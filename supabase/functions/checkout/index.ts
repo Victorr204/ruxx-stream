@@ -1,7 +1,10 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, preflight } from "../_shared/cors.ts";
 
-// Starts a Paystack transaction for the monthly premium plan.
+// Opens Paystack checkout for the monthly premium plan: the subscription
+// payment page when PAYSTACK_PAYMENT_PAGE is set (preferred — its email
+// field is locked so the webhook/verify can map the charge back to the
+// account), or a transaction initialize otherwise.
 //
 // Security model: like sign-stream-url, the function builds a Supabase
 // client from the caller's own Authorization header, so every query runs
@@ -14,6 +17,7 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const PAYSTACK_SECRET_KEY = Deno.env.get("PAYSTACK_SECRET_KEY") ?? "";
 const PAYSTACK_PLAN_CODE = Deno.env.get("PAYSTACK_PLAN_CODE") ?? "";
 const PAYSTACK_PLAN_AMOUNT = Number(Deno.env.get("PAYSTACK_PLAN_AMOUNT") ?? "150000");
+const PAYSTACK_PAYMENT_PAGE = Deno.env.get("PAYSTACK_PAYMENT_PAGE") ?? "";
 
 const PAYSTACK_API = "https://api.paystack.co";
 const APP_REDIRECT = "ruxxstream://profile";
@@ -88,6 +92,13 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (profileError) return json({ error: profileError.message }, 500);
     if (profile?.is_premium) return json({ error: "already_premium" }, 409);
+
+    if (PAYSTACK_PAYMENT_PAGE) {
+      const pageUrl = email
+        ? `${PAYSTACK_PAYMENT_PAGE}?email=${encodeURIComponent(email)}&read-only=email`
+        : PAYSTACK_PAYMENT_PAGE;
+      return json({ configured: true, url: pageUrl });
+    }
 
     const reference = `ruxx_${crypto.randomUUID().replaceAll("-", "")}`;
     const data = await paystackRequest<{ authorization_url: string; reference: string }>(

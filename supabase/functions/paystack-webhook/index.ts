@@ -28,6 +28,24 @@ type AdminClient = NonNullable<typeof admin>;
 
 type PaystackEvent = { event?: string; data?: Record<string, unknown> };
 
+/**
+ * Maps a payer's email to a user id. Payment-page charges carry no
+ * supabase_user_id metadata (the page locks the email instead), so the
+ * webhook resolves the account through GoTrue before granting.
+ */
+async function userIdForEmail(db: AdminClient, email: string): Promise<string | null> {
+  const target = email.trim().toLowerCase();
+  if (!target) return null;
+  for (let page = 1; page <= 5; page += 1) {
+    const { data, error } = await db.auth.admin.listUsers({ page, perPage: 100 });
+    if (error || !data?.users?.length) return null;
+    const match = data.users.find((user) => (user.email ?? "").toLowerCase() === target);
+    if (match) return match.id;
+    if (data.users.length < 100) return null;
+  }
+  return null;
+}
+
 async function hmacSha512Hex(secret: string, body: string): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -62,14 +80,21 @@ function customerCodeOf(value: unknown): string | null {
 
 /**
  * Flips is_premium for one profile, located by user id (from transaction
- * metadata) or by the Paystack customer code stored at first charge.
+ * metadata), by the payer's email (payment-page charges), or by the
+ * Paystack customer code stored at first charge.
  */
 async function applyProfile(
   db: AdminClient,
-  args: { userId: string | null; customerCode: string | null; premium: boolean },
+  args: {
+    userId: string | null;
+    customerCode: string | null;
+    email: string | null;
+    premium: boolean;
+  },
 ): Promise<void> {
-  const { userId, customerCode, premium } = args;
-  if (!userId && !customerCode) {
+  const { userId, customerCode, email, premium } = args;
+  const ownerId = userId ?? (email ? await userIdForEmail(db, email) : null);
+  if (!ownerId && !customerCode) {
     console.warn("[paystack-webhook] no profile mapping for event", { premium });
     return;
   }
@@ -78,7 +103,7 @@ async function applyProfile(
   if (customerCode) update.billing_customer_id = customerCode;
 
   let query = db.from("profiles").update(update);
-  if (userId) query = query.eq("id", userId);
+  if (ownerId) query = query.eq("id", ownerId);
   else query = query.eq("billing_customer_id", customerCode as string);
 
   const { error } = await query;
@@ -86,7 +111,7 @@ async function applyProfile(
     console.warn("[paystack-webhook] premium update failed", error.message);
   } else {
     console.log(
-      `[paystack-webhook] profile ${userId ?? customerCode} premium=${premium}`,
+      `[paystack-webhook] profile ${ownerId ?? customerCode} premium=${premium}`,
     );
   }
 }
@@ -137,6 +162,10 @@ Deno.serve(async (req) => {
         : null,
     );
     const customerCode = customerCodeOf(object.customer);
+    const customerEmail =
+      object.customer && typeof object.customer === "object"
+        ? str((object.customer as Record<string, unknown>).email)
+        : null;
     const status = str(object.status);
     const amount = Number(object.amount ?? 0);
 
@@ -144,18 +173,33 @@ Deno.serve(async (req) => {
       case "charge.success": {
         const paid = status === "success" && amount >= PAYSTACK_PLAN_AMOUNT;
         if (paid) {
-          await applyProfile(admin, { userId: metadataUid, customerCode, premium: true });
+          await applyProfile(admin, {
+            userId: metadataUid,
+            customerCode,
+            email: customerEmail,
+            premium: true,
+          });
         }
         break;
       }
       case "subscription.create":
         // The first charge already succeeded (charge.success also fires and
         // is idempotent); grant on whichever identifier is available.
-        await applyProfile(admin, { userId: metadataUid, customerCode, premium: true });
+        await applyProfile(admin, {
+          userId: metadataUid,
+          customerCode,
+          email: customerEmail,
+          premium: true,
+        });
         break;
       case "subscription.disable":
       case "subscription.not_renew":
-        await applyProfile(admin, { userId: metadataUid, customerCode, premium: false });
+        await applyProfile(admin, {
+          userId: metadataUid,
+          customerCode,
+          email: customerEmail,
+          premium: false,
+        });
         break;
       case "invoice.payment_failed":
         // Paystack keeps retrying; premium only drops on subscription.disable.

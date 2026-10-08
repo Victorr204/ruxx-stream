@@ -23,7 +23,7 @@ async function resolveBoot(): Promise<{ targetUrl: string }> {
 }
 
 function AppWrapper() {
-  const { theme } = useTheme();
+  const { theme, resolved } = useTheme();
   const [checking, setChecking] = useState(true);
   // Session drives Stack.Protected: (tabs) needs one, login/register don't.
   const session = useAuthStore((s) => s.session);
@@ -63,7 +63,7 @@ function AppWrapper() {
 
   return (
     <>
-      <StatusBar style="light" />
+      <StatusBar style={resolved === "dark" ? "light" : "dark"} />
       <Stack
         screenOptions={{
           headerShown: false,

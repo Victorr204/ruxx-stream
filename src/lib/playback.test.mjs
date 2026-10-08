@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   AUTOSAVE_INTERVAL_SECONDS,
   buildCuePoints,
+  closingMarginSeconds,
   dueCuePoint,
   initialResumePosition,
   isCompleted,
@@ -39,6 +40,21 @@ test("cue points stay out of the final 30 seconds", () => {
 
 test("disabled mid-rolls produce no cue points", () => {
   assert.deepEqual(buildCuePoints({ manualSeconds: [360], runtimeSeconds: 900, midRollEnabled: false }), []);
+});
+
+test("titles too short for the interval cadence get a midpoint cue", () => {
+  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: 120, intervalSeconds: 300 }), [60]);
+  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: 250, intervalSeconds: 300 }), [125]);
+  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: 30, intervalSeconds: 300 }), [15]);
+  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: 4, intervalSeconds: 300 }), [2]);
+});
+
+test("a marker inside the shrinking tail of a short title still yields the midpoint cue", () => {
+  assert.deepEqual(buildCuePoints({ manualSeconds: [50], runtimeSeconds: 60 }), [30]);
+});
+
+test("one-second titles produce no mid-roll", () => {
+  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: 1, intervalSeconds: 300 }), []);
 });
 
 test("unknown runtime keeps manual markers but skips the interval cadence", () => {
@@ -86,6 +102,19 @@ test("isCompleted uses the closing margin", () => {
   assert.equal(isCompleted(884, 900), false);
   assert.equal(isCompleted(800, 900), false);
   assert.equal(isCompleted(500, 0), false);
+});
+
+test("short titles play nearly to the end before completing", () => {
+  assert.equal(isCompleted(27, 30), true);
+  assert.equal(isCompleted(26.9, 30), false);
+  assert.equal(isCompleted(9, 10), true);
+  assert.equal(isCompleted(8.9, 10), false);
+  assert.equal(isCompleted(0.9, 1), true);
+  assert.equal(isCompleted(0, 1), false);
+  assert.equal(isCompleted(0, 0), false);
+  assert.equal(closingMarginSeconds(900), 15);
+  assert.equal(closingMarginSeconds(30), 3);
+  assert.equal(closingMarginSeconds(0), 0);
 });
 
 test("progressFraction clamps to 0..1", () => {

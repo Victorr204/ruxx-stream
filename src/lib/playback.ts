@@ -7,6 +7,8 @@ export const END_MARGIN_SECONDS = 15;
 export const AUTOSAVE_INTERVAL_SECONDS = 10;
 /** No cue point may fire inside the final moments of a title. */
 export const MIN_TAIL_SECONDS = 30;
+/** Short titles shrink the tail (tail = min(MIN_TAIL, runtime * ratio)). */
+const SHORT_TAIL_RATIO = 0.25;
 /** After a cue fires it is ignored for this long (polling tolerance). */
 export const CUE_CONSUMED_TOLERANCE_SECONDS = 1;
 
@@ -24,7 +26,10 @@ export type CuePointOptions = {
  * - Disabled mid-rolls (or premium) => none.
  * - Manual markers always win; the interval cadence only fills in when the
  *   admin has not placed any markers for the title.
- * - Nothing within the last MIN_TAIL_SECONDS, and no runtime => manual only.
+ * - Titles too short for the interval cadence get one midpoint cue instead,
+ *   so seconds-long clips still get a mid-roll break.
+ * - Nothing within the closing tail (scales down for short titles), and no
+ *   runtime => manual only.
  */
 export function buildCuePoints({
   manualSeconds = [],
@@ -35,7 +40,10 @@ export function buildCuePoints({
   if (!midRollEnabled) return [];
 
   const hasRuntime = typeof runtimeSeconds === "number" && runtimeSeconds > 0;
-  const cutoff = hasRuntime ? (runtimeSeconds as number) - MIN_TAIL_SECONDS : Infinity;
+  const tail = hasRuntime
+    ? Math.min(MIN_TAIL_SECONDS, (runtimeSeconds as number) * SHORT_TAIL_RATIO)
+    : Infinity;
+  const cutoff = hasRuntime ? (runtimeSeconds as number) - tail : Infinity;
 
   const manual = [
     ...new Set(
@@ -48,6 +56,11 @@ export function buildCuePoints({
 
   const points: number[] = [];
   for (let t = intervalSeconds; t < cutoff; t += intervalSeconds) points.push(t);
+
+  if (points.length === 0) {
+    const mid = Math.floor((runtimeSeconds as number) / 2);
+    if (mid >= 1 && mid < cutoff) points.push(mid);
+  }
   return points;
 }
 
@@ -99,9 +112,20 @@ export function shouldAutosave(lastSavedSeconds: number, position: number): bool
   return position - lastSavedSeconds >= AUTOSAVE_INTERVAL_SECONDS;
 }
 
+/**
+ * Closing margin for completion: the credits window on real features, but it
+ * shrinks with the title so seconds-long clips still play to (nearly) the
+ * end instead of instantly "completing".
+ */
+export function closingMarginSeconds(duration: number): number {
+  if (!Number.isFinite(duration) || duration <= 0) return 0;
+  return Math.min(END_MARGIN_SECONDS, duration * 0.1);
+}
+
 /** A play is complete when it reaches the closing margin of the runtime. */
 export function isCompleted(position: number, duration: number): boolean {
-  return duration > 0 && position >= duration - END_MARGIN_SECONDS;
+  if (!Number.isFinite(duration) || duration <= 0) return false;
+  return position >= duration - closingMarginSeconds(duration);
 }
 
 /** 0..1 watched fraction, clamped (safe for zero/unknown durations). */

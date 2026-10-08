@@ -117,9 +117,9 @@ export default function CatalogPanel() {
     setArmedDeleteId(null);
     setBusyId(movie.id);
     try {
-      await deleteAdminMovie(movie.id);
+      const warning = await deleteAdminMovie(movie.id);
       setMovies((rows) => rows.filter((row) => row.id !== movie.id));
-      showAlert("Catalog", `"${movie.title}" deleted.`);
+      showAlert("Catalog", warning ? `"${movie.title}" deleted. ${warning}` : `"${movie.title}" deleted.`);
     } catch (e) {
       showAlert("Catalog", e instanceof Error ? e.message : "Could not delete the movie.", "error");
     } finally {

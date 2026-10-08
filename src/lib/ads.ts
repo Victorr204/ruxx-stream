@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import Constants, { ExecutionEnvironment } from "expo-constants";
 
 // Native AdMob interstitial bridge. Loaded lazily via require so web and TV
 // bundles never touch the native module; those platforms use the house
@@ -6,8 +7,10 @@ import { Platform } from "react-native";
 
 export type AdShowStatus = "completed" | "skipped" | "failed" | "unavailable";
 
+const inExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+
 export function canUseNativeAds(): boolean {
-  return Platform.OS !== "web" && !Platform.isTV;
+  return Platform.OS !== "web" && !Platform.isTV && !inExpoGo;
 }
 
 type InterstitialHandle = {
@@ -35,6 +38,7 @@ function loadAdsModule(): AdMobModule | null {
   } catch {
     cachedModule = null;
   }
+  if (!cachedModule) cachedModule = null;
   return cachedModule;
 }
 
@@ -100,6 +104,11 @@ export async function showNativeInterstitial(unitId: string): Promise<AdShowStat
     unsubscribers.push(ad.addAdEventListener(ads.AdEventType.ERROR, () => finish("failed")));
 
     timeout = setTimeout(() => finish("failed"), LOAD_TIMEOUT_MS);
-    ad.load();
+    try {
+      ad.load();
+    } catch (e) {
+      console.warn("[ads] load failed", e);
+      finish("failed");
+    }
   });
 }

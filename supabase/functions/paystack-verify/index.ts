@@ -23,7 +23,7 @@ type VerifyTransaction = {
   status?: string;
   amount?: number;
   currency?: string;
-  customer?: { customer_code?: string } | string;
+  customer?: { customer_code?: string; email?: string } | string;
   metadata?: { supabase_user_id?: string } | null;
 };
 
@@ -77,9 +77,27 @@ Deno.serve(async (req) => {
     }
 
     const tx = parsed.data;
-    const owner = tx.metadata?.supabase_user_id ?? "";
-    if (!owner) return json({ premium: false, status: "unlinked" });
-    if (owner !== userData.user.id) return json({ error: "reference belongs to another user" }, 403);
+    let ownerId = "";
+    const metadataOwner = tx.metadata?.supabase_user_id ?? "";
+    if (metadataOwner) {
+      if (metadataOwner !== userData.user.id) {
+        return json({ error: "reference belongs to another user" }, 403);
+      }
+      ownerId = metadataOwner;
+    } else {
+      // Payment-page charges carry no metadata; the payer's email was
+      // locked on the page (read-only=email), so an exact match with the
+      // signed-in account proves the transaction belongs to this user.
+      const txEmail =
+        typeof tx.customer === "object" && tx.customer
+          ? (tx.customer.email ?? "").toLowerCase()
+          : "";
+      const callerEmail = (userData.user.email ?? "").toLowerCase();
+      if (!txEmail || !callerEmail || txEmail !== callerEmail) {
+        return json({ premium: false, status: "unlinked" });
+      }
+      ownerId = userData.user.id;
+    }
 
     const amount = Number(tx.amount ?? 0);
     const paid =
@@ -100,7 +118,7 @@ Deno.serve(async (req) => {
     const { error: updateError } = await admin
       .from("profiles")
       .update(update)
-      .eq("id", owner);
+      .eq("id", ownerId);
     if (updateError) {
       console.error("[paystack-verify] premium update failed", updateError.message);
       return json({ error: updateError.message }, 500);

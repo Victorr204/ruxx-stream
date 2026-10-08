@@ -66,7 +66,7 @@ function GlowOrb({ color, size, top, left, right, bottom, delay }) {
 }
 
 export default function Login() {
-  const { theme } = useTheme();
+  const { theme, resolved } = useTheme();
   const signIn = useAuthStore((s) => s.signIn);
   const sendPasswordReset = useAuthStore((s) => s.sendPasswordReset);
 
@@ -131,7 +131,7 @@ export default function Login() {
 
   return (
     <View style={[styles.root, { backgroundColor: theme.background }]}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle={resolved === "dark" ? "light-content" : "dark-content"} />
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <SafeAreaView style={styles.flex} edges={["top", "left", "right", "bottom"]}>
           {/* ── Branded hero ── */}

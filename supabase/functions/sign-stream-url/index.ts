@@ -23,9 +23,11 @@ Deno.serve(async (req) => {
     if (!authorization) return json({ error: "Missing Authorization header" }, 401);
 
     let movieId: string | null = null;
+    let purpose: string | null = null;
     try {
       const body = await req.json();
       movieId = typeof body?.movie_id === "string" ? body.movie_id : null;
+      purpose = typeof body?.purpose === "string" ? body.purpose : null;
     } catch {
       movieId = null;
     }
@@ -78,16 +80,20 @@ Deno.serve(async (req) => {
 
     if (!url) return json({ error: "No playable source for this title" }, 404);
 
-    // Analytics never blocks playback.
-    try {
-      await db.from("playback_events").insert({
-        user_id: userId,
-        movie_id: movieId,
-        event: "play",
-        position_seconds: 0,
-      });
-    } catch (e) {
-      console.warn("[sign-stream-url] playback event not written", e);
+    // Analytics never blocks playback. A subtitle scan (`purpose: "scan"`)
+    // borrows this endpoint purely to resolve a URL — it must not show up
+    // as a play in the stats.
+    if (purpose !== "scan") {
+      try {
+        await db.from("playback_events").insert({
+          user_id: userId,
+          movie_id: movieId,
+          event: "play",
+          position_seconds: 0,
+        });
+      } catch (e) {
+        console.warn("[sign-stream-url] playback event not written", e);
+      }
     }
 
     return json({ movie_id: movieId, url, quality, expires_in: STREAM_TTL_SECONDS });

@@ -17,9 +17,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, GOLD, GOLD_GRADIENT } from "../../context/ThemeContext";
 import AppAlert from "../../utils/AppAlert";
 import { useMovie } from "../../src/hooks/useMovies";
-import { fetchWatchProgress } from "../../src/lib/api";
+import { fetchListIdsForMovie, fetchWatchProgress } from "../../src/lib/api";
 import { formatMeta, formatRuntime } from "../../src/lib/format";
 import { useDownloadsStore } from "../../src/stores/downloads";
+import ListSheet from "../../src/components/ListSheet";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const BACKDROP_H = Math.min(Math.round(SCREEN_W * 0.56), 380);
@@ -36,6 +37,8 @@ export default function MovieDetail() {
   const [resumeState, setResumeState] = useState({ id: null, position: 0 });
   const [playFocused, setPlayFocused] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
+  const [listSheetOpen, setListSheetOpen] = useState(false);
+  const [membership, setMembership] = useState({ id: null, ids: [] });
 
   // No stream URL is resolved here — the store does that only when the
   // user actually presses Download (each resolve logs playback_events).
@@ -70,6 +73,23 @@ export default function MovieDetail() {
 
   // Stale positions are ignored while the new title (or its progress) loads.
   const position = resumeState.id === id ? resumeState.position : 0;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!id) return undefined;
+
+    fetchListIdsForMovie(id)
+      .then((ids) => {
+        if (!cancelled) setMembership({ id, ids });
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  const inListIds = membership.id === id ? membership.ids : [];
 
   const goBack = () => {
     try {
@@ -181,6 +201,12 @@ export default function MovieDetail() {
         theme={theme}
         onClose={() => setAlert((a) => ({ ...a, visible: false }))}
       />
+      <ListSheet
+        visible={listSheetOpen}
+        movieId={movie.id}
+        onClose={() => setListSheetOpen(false)}
+        onMembershipChange={(ids) => setMembership({ id: movie.id, ids })}
+      />
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
         {/* ── Backdrop ── */}
         <View style={styles.backdrop}>
@@ -269,6 +295,25 @@ export default function MovieDetail() {
               <Text style={[styles.dlBtnText, { color: theme.text }]}>{dlLabel}</Text>
             </TouchableOpacity>
           ) : null}
+
+          <TouchableOpacity
+            focusable
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={`My List — ${movie.title}`}
+            onPress={() => setListSheetOpen(true)}
+            style={[styles.dlBtn, inListIds.length > 0 && styles.dlBtnReady]}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name={inListIds.length > 0 ? "bookmark" : "bookmark-outline"}
+              size={18}
+              color={GOLD}
+            />
+            <Text style={[styles.dlBtnText, { color: theme.text }]}>
+              {inListIds.length > 0 ? "In My List" : "My List"}
+            </Text>
+          </TouchableOpacity>
 
           {/* ── Description ── */}
           {movie.description ? (

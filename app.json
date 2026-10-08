@@ -6,7 +6,11 @@
     "orientation": "default",
     "icon": "./assets/images/Android/playstore-icon.png",
     "scheme": "ruxxstream",
-    "platforms": ["ios", "android", "web"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
     "userInterfaceStyle": "dark",
     "backgroundColor": "#050505",
     "ios": {
@@ -58,7 +62,8 @@
           "androidAppId": "ca-app-pub-3940256099942544~3347511713",
           "iosAppId": "ca-app-pub-3940256099942544~1458002511"
         }
-      ]
+      ],
+      "react-native-compressor"
     ],
     "experiments": {
       "typedRoutes": true

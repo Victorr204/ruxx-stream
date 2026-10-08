@@ -8,6 +8,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Platform,
+  Switch,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -90,7 +91,7 @@ function Row({ icon, label, value, onPress, right, danger }) {
 }
 
 export default function Profile() {
-  const { theme } = useTheme();
+  const { theme, resolved, setMode } = useTheme();
   const profile = useAuthStore((s) => s.profile);
   const session = useAuthStore((s) => s.session);
   const signOut = useAuthStore((s) => s.signOut);
@@ -196,22 +197,25 @@ export default function Profile() {
         announcePremium();
         return;
       }
-      if (outcome.type === "success") {
-        // The Paystack webhook may land just after the redirect — poll briefly.
-        for (let attempt = 0; attempt < 4; attempt += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-          await refreshProfile();
-          if (useAuthStore.getState().profile?.is_premium) {
-            announcePremium();
-            return;
-          }
+      // Payment-page flow returns no reference (the browser is closed on
+      // dismiss) — the webhook grants within seconds of a successful charge,
+      // so poll briefly either way before giving up.
+      const dismissed = outcome.type !== "success";
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        await refreshProfile();
+        if (useAuthStore.getState().profile?.is_premium) {
+          announcePremium();
+          return;
         }
-        showAlert(
-          "Payment Processing",
-          "Your payment is being confirmed. Premium activates within a minute — reopen Profile to see it.",
-          "info"
-        );
       }
+      showAlert(
+        "Payment Processing",
+        dismissed
+          ? "If your payment went through, Premium activates within a minute — reopen Profile to see it."
+          : "Your payment is being confirmed. Premium activates within a minute — reopen Profile to see it.",
+        "info"
+      );
     } catch (e) {
       showAlert("Checkout Failed", e instanceof Error ? e.message : "Please try again later.", "error");
     } finally {
@@ -433,11 +437,33 @@ export default function Profile() {
           </Animated.View>
         )}
 
+        {/* ── Appearance ── */}
+        <Animated.Text entering={FadeInDown.delay(310).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }]}>
+          Appearance
+        </Animated.Text>
+        <Animated.View entering={FadeInDown.delay(350).duration(450)} style={{ gap: 10 }}>
+          <Row
+            icon={resolved === "dark" ? "moon" : "sunny"}
+            label="Dark mode"
+            value={resolved === "dark" ? "Dark theme" : "Light theme"}
+            right={
+              <Switch
+                value={resolved === "dark"}
+                onValueChange={(next) => setMode(next ? "dark" : "light")}
+                trackColor={{ false: "#c9c9c9", true: GOLD }}
+                thumbColor={resolved === "dark" ? "#141414" : "#f6f6f6"}
+                ios_backgroundColor="#c9c9c9"
+                accessibilityLabel="Dark mode"
+              />
+            }
+          />
+        </Animated.View>
+
         {/* ── Membership ── */}
-        <Animated.Text entering={FadeInDown.delay(340).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }]}>
+        <Animated.Text entering={FadeInDown.delay(390).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }]}>
           Membership
         </Animated.Text>
-        <Animated.View entering={FadeInDown.delay(380).duration(450)} style={{ gap: 10 }}>
+        <Animated.View entering={FadeInDown.delay(430).duration(450)} style={{ gap: 10 }}>
           <Row
             icon="star-outline"
             label={isPremium ? "Premium active" : "Upgrade to Premium"}
@@ -449,7 +475,7 @@ export default function Profile() {
 
         {/* ── Admin ── */}
         {isAdmin && (
-          <Animated.View entering={FadeInDown.delay(410).duration(450)} style={{ gap: 10 }}>
+          <Animated.View entering={FadeInDown.delay(460).duration(450)} style={{ gap: 10 }}>
             <Row
               icon="shield-checkmark-outline"
               label="Admin console"
@@ -460,7 +486,7 @@ export default function Profile() {
         )}
 
         {/* ── Sign out ── */}
-        <Animated.View entering={FadeInDown.delay(440).duration(450)} style={styles.signOutWrap}>
+        <Animated.View entering={FadeInDown.delay(490).duration(450)} style={styles.signOutWrap}>
           <TouchableOpacity style={styles.signOutBtn} onPress={handleSignOut} activeOpacity={0.8}>
             <Ionicons name="log-out-outline" size={18} color="#ef4444" />
             <Text style={styles.signOutText}>Sign Out</Text>

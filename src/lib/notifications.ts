@@ -1,5 +1,4 @@
 import { Platform } from "react-native";
-import * as Notifications from "expo-notifications";
 import Constants from "expo-constants";
 import { getSupabase, isSupabaseConfigured } from "./supabase";
 
@@ -8,25 +7,59 @@ import { getSupabase, isSupabaseConfigured } from "./supabase";
 // notifications when a seal finishes; registerForPush() hands the Expo
 // push token to the push_tokens table so the send-push edge function can
 // fan announcements out to every device.
+//
+// expo-notifications throws while loading inside Expo Go (remote push was
+// removed in SDK 53), so the module is required lazily: if the environment
+// can't provide it, every entry point degrades to a no-op instead of taking
+// the router down with a red-box import error.
+
+type NotificationsModule = typeof import("expo-notifications");
 
 const ANDROID_CHANNEL_ID = "ruxx-updates";
 
 const isNative = Platform.OS !== "web";
 
-if (isNative) {
-  // Foreground downloads still announce themselves — without a handler
-  // expo-notifications swallows notifications while the app is open.
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowBanner: true,
-      shouldShowList: true,
-      shouldPlaySound: false,
-      shouldSetBadge: false,
-    }),
-  });
+let notificationsPromise: Promise<NotificationsModule | null> | undefined;
+
+function loadNotifications(): Promise<NotificationsModule | null> {
+  if (!notificationsPromise) {
+    notificationsPromise = (async () => {
+      try {
+        const mod = await import("expo-notifications");
+        if (isNative) {
+          // Foreground downloads still announce themselves — without a
+          // handler expo-notifications swallows notifications while the
+          // app is open.
+          try {
+            mod.setNotificationHandler({
+              handleNotification: async () => ({
+                shouldShowBanner: true,
+                shouldShowList: true,
+                shouldPlaySound: false,
+                shouldSetBadge: false,
+              }),
+            });
+          } catch (e) {
+            console.warn("[notifications] handler install failed", e);
+          }
+        }
+        return mod;
+      } catch (e) {
+        console.warn("[notifications] unavailable in this environment; notifications disabled", e);
+        return null;
+      }
+    })();
+  }
+  return notificationsPromise;
 }
 
-async function ensureAndroidChannel(): Promise<void> {
+if (isNative) {
+  // Kick the lazy load off at startup so the notification handler is in
+  // place before anything can fire; failures are captured in the loader.
+  void loadNotifications();
+}
+
+async function ensureAndroidChannel(Notifications: NotificationsModule): Promise<void> {
   if (Platform.OS !== "android") return;
   await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
     name: "Downloads & news",
@@ -40,6 +73,8 @@ async function ensureAndroidChannel(): Promise<void> {
 export async function notificationPermissionGranted(): Promise<boolean> {
   if (!isNative) return false;
   try {
+    const Notifications = await loadNotifications();
+    if (!Notifications) return false;
     const status = await Notifications.getPermissionsAsync();
     return status.granted;
   } catch {
@@ -51,7 +86,9 @@ export async function notificationPermissionGranted(): Promise<boolean> {
 export async function ensureNotificationPermission(): Promise<boolean> {
   if (!isNative) return false;
   try {
-    await ensureAndroidChannel();
+    const Notifications = await loadNotifications();
+    if (!Notifications) return false;
+    await ensureAndroidChannel(Notifications);
     const current = await Notifications.getPermissionsAsync();
     if (current.granted) return true;
     const asked = await Notifications.requestPermissionsAsync();
@@ -93,6 +130,9 @@ async function savePushToken(token: string): Promise<void> {
 export async function registerForPush(): Promise<string | null> {
   if (!isNative) return null;
   try {
+    const Notifications = await loadNotifications();
+    if (!Notifications) return null;
+
     const granted = await ensureNotificationPermission();
     if (!granted) return null;
 
@@ -116,7 +156,9 @@ export async function registerForPush(): Promise<string | null> {
 export async function notifyDownloadReady(title: string): Promise<void> {
   if (!isNative) return;
   try {
-    await ensureAndroidChannel();
+    const Notifications = await loadNotifications();
+    if (!Notifications) return;
+    await ensureAndroidChannel(Notifications);
     const status = await Notifications.getPermissionsAsync();
     if (!status.granted) return;
     await Notifications.scheduleNotificationAsync({

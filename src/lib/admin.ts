@@ -198,10 +198,89 @@ export async function setMovieFlags(
   if (error) throw new Error(message(error));
 }
 
-/** Hard delete (cascades genres, markers, grants, premium source). */
-export async function deleteAdminMovie(id: string): Promise<void> {
-  const { error } = await getSupabase().from("movies").delete().eq("id", id);
+type MovieAssetRow = {
+  r2_key_free: string | null;
+  poster_url: string | null;
+  backdrop_url: string | null;
+  premium_movie_sources: { r2_key: string | null } | null;
+};
+
+function artworkObjectPath(url: string | null): string | null {
+  if (!url) return null;
+  const marker = "/storage/v1/object/public/artwork/";
+  const at = url.indexOf(marker);
+  if (at < 0) return null;
+  const path = url.slice(at + marker.length);
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
+
+async function purgeMovieAssets(row: MovieAssetRow | null): Promise<string | null> {
+  if (!row) return null;
+  const sb = getSupabase();
+  let failed = 0;
+
+  const keys = [
+    ...new Set(
+      [row.r2_key_free, row.premium_movie_sources?.r2_key].filter(
+        (key): key is string => !!key && key.startsWith("videos/")
+      )
+    ),
+  ];
+  for (const key of keys) {
+    try {
+      const { data, error } = await sb.functions.invoke("r2-delete", { body: { key } });
+      if (error) throw new Error(error.message);
+      if (data?.error) throw new Error(String(data.error));
+      if (data?.ok !== true) throw new Error("storage refused the delete");
+    } catch (e) {
+      failed += 1;
+      console.warn(`[admin] video object cleanup failed for ${key}`, e);
+    }
+  }
+
+  const paths = [
+    ...new Set(
+      [row.poster_url, row.backdrop_url].map(artworkObjectPath).filter((p): p is string => !!p)
+    ),
+  ];
+  if (paths.length > 0) {
+    try {
+      const { error } = await sb.storage.from("artwork").remove(paths);
+      if (error) throw new Error(error.message);
+    } catch (e) {
+      failed += 1;
+      console.warn("[admin] artwork cleanup failed", e);
+    }
+  }
+
+  if (failed === 0) return null;
+  const noun = failed === 1 ? "object" : "objects";
+  return `Storage cleanup failed for ${failed} ${noun} — see the console for details.`;
+}
+
+/**
+ * Hard delete: row first (cascades genres, markers, grants, premium source),
+ * then best-effort storage cleanup — the B2 video objects via the r2-delete
+ * edge function and the poster/backdrop from the artwork bucket. Returns a
+ * warning string when storage cleanup partially failed, null otherwise.
+ */
+export async function deleteAdminMovie(id: string): Promise<string | null> {
+  const sb = getSupabase();
+  const { data: row, error: fetchError } = await sb
+    .from("movies")
+    .select("r2_key_free, poster_url, backdrop_url, premium_movie_sources(r2_key)")
+    .eq("id", id)
+    .maybeSingle();
+  if (fetchError) throw new Error(message(fetchError));
+
+  const { error } = await sb.from("movies").delete().eq("id", id);
   if (error) throw new Error(message(error));
+
+  return purgeMovieAssets((row as MovieAssetRow | null) ?? null);
 }
 
 export async function fetchAdSettings(): Promise<AdminAdSettings | null> {
@@ -300,5 +379,45 @@ export async function revokeDownloadFromUser(userId: string, movieId: string): P
     .delete()
     .eq("user_id", userId)
     .eq("movie_id", movieId);
+  if (error) throw new Error(message(error));
+}
+
+export type AdminSubtitle = {
+  id: string;
+  movie_id: string;
+  language: string;
+  label: string;
+  created_at: string;
+};
+
+/** Subtitle files uploaded for one movie (metadata only). */
+export async function fetchAdminSubtitles(movieId: string): Promise<AdminSubtitle[]> {
+  const { data, error } = await getSupabase()
+    .from("movie_subtitles")
+    .select("id, movie_id, language, label, created_at")
+    .eq("movie_id", movieId)
+    .order("language", { ascending: true });
+  if (error) throw new Error(message(error));
+  return (data ?? []) as AdminSubtitle[];
+}
+
+/** Adds (or replaces) the subtitle file for one movie + language. */
+export async function saveAdminSubtitle(input: {
+  movie_id: string;
+  language: string;
+  label: string;
+  source: string;
+}): Promise<void> {
+  const { error } = await getSupabase()
+    .from("movie_subtitles")
+    .upsert(input, { onConflict: "movie_id,language" });
+  if (error) throw new Error(message(error));
+}
+
+export async function deleteAdminSubtitle(id: string): Promise<void> {
+  const { error } = await getSupabase()
+    .from("movie_subtitles")
+    .delete()
+    .eq("id", id);
   if (error) throw new Error(message(error));
 }

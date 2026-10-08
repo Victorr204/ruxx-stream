@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useMemo } from "react";
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Appearance } from "react-native";
 
@@ -114,8 +114,13 @@ const lightTheme = {
 };
 
 export const ThemeProvider = ({ children }) => {
-  const [mode, setMode] = useState("dark");
+  const [mode, setModeState] = useState("dark");
   const [systemScheme, setSystemScheme] = useState(() => Appearance.getColorScheme() || "light");
+
+  const setMode = useCallback((next) => {
+    setModeState(next);
+    AsyncStorage.setItem("themeMode", next).catch(() => {});
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -124,10 +129,10 @@ export const ThemeProvider = ({ children }) => {
         const savedMode = await AsyncStorage.getItem("themeMode");
         const initialMode = savedMode || "system";
         if (!cancelled) {
-          setMode(initialMode);
+          setModeState(initialMode);
         }
       } catch (_e) {
-        if (!cancelled) setMode("dark");
+        if (!cancelled) setModeState("dark");
       }
     };
     loadTheme();
@@ -147,7 +152,9 @@ export const ThemeProvider = ({ children }) => {
     return mode === "dark" ? darkTheme : lightTheme;
   }, [mode, systemScheme]);
 
-  const value = useMemo(() => ({ mode, setMode, theme }), [mode, theme]);
+  const resolved = mode === "system" ? systemScheme : mode;
+
+  const value = useMemo(() => ({ mode, resolved, setMode, theme }), [mode, resolved, setMode, theme]);
 
   return (
     <ThemeContext.Provider value={value}>
@@ -157,4 +164,5 @@ export const ThemeProvider = ({ children }) => {
 };
 
 export const useTheme = () =>
-  useContext(ThemeContext) || { mode: "dark", setMode: () => {}, theme: darkTheme };
+  useContext(ThemeContext) ||
+  { mode: "dark", resolved: "dark", setMode: () => {}, theme: darkTheme };

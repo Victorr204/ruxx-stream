@@ -99,7 +99,7 @@ function Field({ label, icon, showToggle, showPassword, onTogglePassword, ...pro
 }
 
 export default function Register() {
-  const { theme } = useTheme();
+  const { theme, resolved } = useTheme();
   const signUp = useAuthStore((s) => s.signUp);
 
   const [name, setName] = useState("");
@@ -168,7 +168,7 @@ export default function Register() {
 
   return (
     <View style={[styles.root, { backgroundColor: theme.background }]}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle={resolved === "dark" ? "light-content" : "dark-content"} />
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <SafeAreaView style={styles.flex} edges={["top", "left", "right", "bottom"]}>
           {/* ── Branded hero ── */}

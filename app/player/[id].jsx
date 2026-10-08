@@ -8,7 +8,9 @@ import {
   Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, router } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import NetInfo from "@react-native-community/netinfo";
 import { GOLD } from "../../context/ThemeContext";
@@ -18,12 +20,14 @@ import { useAdsConfig } from "../../src/stores/adsConfig";
 import { useMovie } from "../../src/hooks/useMovies";
 import {
   fetchAdMarkers,
+  fetchSubtitleCues,
   fetchWatchProgress,
   logAdEvent,
   logPlaybackEvent,
   resolveStreamUrl,
   saveWatchProgress,
 } from "../../src/lib/api";
+import { cueAt, languageLabel } from "../../src/lib/subtitles";
 import {
   RESUME_THRESHOLD_SECONDS,
   buildCuePoints,
@@ -35,6 +39,8 @@ import {
 import { canUseNativeAds, showNativeInterstitial } from "../../src/lib/ads";
 import { AdOverlay } from "../../src/components/AdOverlay";
 import { PlayerEngine } from "../../src/components/PlayerEngine";
+import SubtitleSheet from "../../src/components/SubtitleSheet";
+import ScanEngine from "../../src/components/ScanEngine";
 
 // Playback screen: resolves a playable URL + resume point, runs ad breaks
 // (AdMob interstitial natively, house overlay on web/TV/failure), schedules
@@ -45,6 +51,7 @@ import { PlayerEngine } from "../../src/components/PlayerEngine";
 // with error winning whenever a load/playback error exists.
 
 const CONTROLS_HIDE_MS = 4500;
+const SUBTITLE_PREF_KEY = "ruxx.subtitle.language";
 
 const EMPTY_LOAD = {
   id: null,
@@ -114,6 +121,13 @@ export default function Player() {
   const completedRef = useRef(false);
   const mountedRef = useRef(true);
   const controlsTimerRef = useRef(null);
+
+  const [subLang, setSubLang] = useState(null);
+  const [subCues, setSubCues] = useState([]);
+  const [subsLoading, setSubsLoading] = useState(false);
+  const [subsPending, setSubsPending] = useState("");
+  const [subsError, setSubsError] = useState(null);
+  const [subtitleSheet, setSubtitleSheet] = useState(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -310,6 +324,65 @@ export default function Player() {
     });
   }, []);
 
+  const applySubtitleLanguage = useCallback(
+    async (code) => {
+      if (!movieId) return false;
+      if (!code) {
+        setSubLang(null);
+        setSubCues([]);
+        setSubsError(null);
+        setSubsPending("");
+        AsyncStorage.removeItem(SUBTITLE_PREF_KEY).catch(() => undefined);
+        return true;
+      }
+      setSubsLoading(true);
+      setSubsPending(languageLabel(code));
+      setSubsError(null);
+      try {
+        const cues = await fetchSubtitleCues(movieId, code);
+        if (!mountedRef.current) return false;
+        setSubCues(cues);
+        setSubLang(code);
+        AsyncStorage.setItem(SUBTITLE_PREF_KEY, code).catch(() => undefined);
+        return true;
+      } catch (e) {
+        // Keep whatever is on screen (an admin upload, or the previous
+        // language) — a failed generation must not blank the subtitles.
+        if (!mountedRef.current) return false;
+        setSubsError(e instanceof Error ? e.message : "Subtitles unavailable");
+        return false;
+      } finally {
+        if (mountedRef.current) {
+          setSubsPending("");
+          setSubsLoading(false);
+        }
+      }
+    },
+    [movieId]
+  );
+
+  // Restore the viewer's last subtitle language whenever a title loads.
+  useEffect(() => {
+    if (!movieId) return undefined;
+    let cancelled = false;
+    AsyncStorage.getItem(SUBTITLE_PREF_KEY)
+      .then((code) => {
+        if (!cancelled && code) applySubtitleLanguage(code);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [movieId, applySubtitleLanguage]);
+
+  const handleSubtitleSelect = useCallback(
+    async (code) => {
+      const ok = await applySubtitleLanguage(code);
+      if (ok && mountedRef.current) setSubtitleSheet(false);
+    },
+    [applySubtitleLanguage]
+  );
+
   const ensureStarted = useCallback(() => {
     if (hasStartedRef.current) return;
     if (phaseRef.current !== "playing" || !engineRef.current) return;
@@ -365,15 +438,20 @@ export default function Player() {
       if (!mountedRef.current || adBreakRef.current !== placement) return;
       setAdBreak({ placement, mode: "native" });
 
-      const status =
-        unit && canUseNativeAds() ? await showNativeInterstitial(unit) : "unavailable";
+      let status;
+      try {
+        status = unit && canUseNativeAds() ? await showNativeInterstitial(unit) : "unavailable";
+      } catch (e) {
+        console.warn("[ads] interstitial unavailable", e);
+        status = "failed";
+      }
       if (!mountedRef.current || adBreakRef.current !== placement) return;
 
       if (status === "completed" || status === "skipped") {
         finishAdBreak(status);
         return;
       }
-      if (failOpen()) {
+      if (status !== "unavailable" && failOpen()) {
         finishAdBreak("failed");
         return;
       }
@@ -566,9 +644,11 @@ export default function Player() {
   const busy = phase === "loading" || phase === "preroll";
   const title = movie?.title ?? "Now playing";
   const watchedFraction = duration > 0 ? Math.min(1, position / duration) : 0;
+  const activeCue = subCues.length > 0 ? cueAt(subCues, position) : null;
 
   return (
     <View style={styles.root}>
+      <StatusBar style="light" />
       {stream && movie && !showError ? (
         <PlayerEngine
           url={stream.url}
@@ -609,7 +689,21 @@ export default function Player() {
             <Text numberOfLines={1} style={styles.title}>
               {title}
             </Text>
-            <View style={styles.iconBtnSpacer} />
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={() => {
+                setSubsError(null);
+                setSubtitleSheet(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Subtitle settings"
+            >
+              <Ionicons
+                name={subLang ? "language" : "language-outline"}
+                size={21}
+                color={subLang ? GOLD : "#fff"}
+              />
+            </TouchableOpacity>
           </SafeAreaView>
 
           <View style={styles.centerRow} pointerEvents="box-none">
@@ -661,6 +755,24 @@ export default function Player() {
         </View>
       ) : null}
 
+      {/* Subtitles */}
+      {activeCue && phase === "playing" && !adBreak ? (
+        <View style={styles.subtitleLayer} pointerEvents="none">
+          <Text style={styles.subtitleText}>{activeCue}</Text>
+        </View>
+      ) : null}
+
+      {subsLoading && !showError ? (
+        <View style={styles.subtitleLayer} pointerEvents="none">
+          <View style={styles.subtitlePill}>
+            <ActivityIndicator size="small" color={GOLD} />
+            <Text style={styles.subtitlePillText}>
+              {subsPending ? `Generating ${subsPending} subtitles…` : "Preparing subtitles…"}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+
       {/* Loading / waiting-for-ad */}
       {busy && !showError ? (
         <SafeAreaView style={styles.centerCard}>
@@ -676,6 +788,19 @@ export default function Player() {
       {adBreak?.mode === "overlay" ? (
         <AdOverlay placement={adBreak.placement} onFinished={finishAdBreak} />
       ) : null}
+
+      {/* Transcription engine host: hidden iframe / WebView, always mounted. */}
+      <ScanEngine />
+
+      <SubtitleSheet
+        visible={subtitleSheet}
+        movieId={movieId ?? ""}
+        active={subLang}
+        busy={subsLoading}
+        error={subsError}
+        onSelect={handleSubtitleSelect}
+        onClose={() => setSubtitleSheet(false)}
+      />
 
       {/* Finished */}
       {phase === "ended" && !adBreak && !showError ? (
@@ -826,6 +951,37 @@ const styles = StyleSheet.create({
     textAlign: "center",
     maxWidth: 320,
   },
+  subtitleLayer: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    bottom: 96,
+    zIndex: 8,
+    alignItems: "center",
+  },
+  subtitleText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "700",
+    lineHeight: 22,
+    textAlign: "center",
+    backgroundColor: "rgba(0,0,0,0.68)",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    overflow: "hidden",
+    maxWidth: "94%",
+  },
+  subtitlePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(0,0,0,0.68)",
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  subtitlePillText: { color: "#fff", fontSize: 12.5, fontWeight: "700" },
   doneBadge: {
     width: 62,
     height: 62,

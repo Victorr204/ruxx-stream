@@ -39,6 +39,24 @@ In the Supabase SQL editor, run in order:
 6. `supabase/migrations/20261006130000_paystack_billing.sql` — renames the
    Stripe-era billing columns to generic names and recreates the privilege
    guard against them.
+7. `supabase/migrations/20261008140000_home_lists_subtitles.sql` — the
+   one merged file for everything after the billing migration (the free
+   tier is kept to a **seven-file** set, so pending SQL accumulates into
+   a single re-runnable file). It contains, in order: the
+   `trending_movie_ids` RPC behind the home hero's Trending slide (skip
+   it and the slot falls back to new uploads), **My List** (named lists
+   per account — free 5 · premium 15, enforced by a trigger — their
+   items, and the RLS policies keeping every list private), the four
+   curated home categories (Western TV Shows, Nollywood Movies, Korean
+   Drama, Bollywood Movies), `movie_subtitles` /
+   `movie_subtitle_translations` (admin-uploaded .srt/.vtt files per
+   movie plus the machine-translation cache: admins write, everyone
+   reads), `movie_subtitles.detected_language` (what the auto-detector
+   answered about each uploaded file — null until first use), and
+   `movie_subtitles.origin` (`upload` | `generated`, so the audio
+   scanner's results stay distinguishable from admin files). Every
+   statement is idempotent: pasting the file on a fresh project brings
+   it fully up to date, and re-running on a live one is safe.
 
 CLI alternative (project linked in `supabase/config.toml`): apply everything in
 one shot with
@@ -59,7 +77,15 @@ supabase functions deploy checkout
 supabase functions deploy paystack-verify
 supabase functions deploy paystack-webhook --no-verify-jwt
 supabase functions deploy send-push
+supabase functions deploy translate-subtitles
+supabase functions deploy save-transcript
+supabase functions deploy whisper-model --no-verify-jwt
 ```
+
+`whisper-model` must be deployed with `--no-verify-jwt`: the scanner's
+transformers.js fetches plain model files with no `Authorization` header —
+the function's path allowlist is the only boundary (it 302s to a
+presigned GET inside the private bucket, so nothing ever goes public).
 
 ### 5. Backblaze B2 bucket + secrets
 
@@ -78,6 +104,39 @@ supabase secrets set \
 ```
 
 Any S3-compatible provider works — set `S3_ENDPOINT`/`S3_REGION` to match it.
+
+3. Upload the scanner's model files (Whisper weights from Hugging Face +
+   the ONNX Runtime wasm from `node_modules`) into the bucket. The script
+   reads the same `S3_*` names from the environment or `.env`:
+
+   ```bash
+   node scripts/upload-whisper-model.mjs          # everything
+   node scripts/upload-whisper-model.mjs --wasm   # runtime only
+   ```
+
+   Keys land at `models/onnx-community/whisper-tiny/…` and
+   `models/whisper-wasm/…` — exactly what `whisper-model` signs
+   (`?path=<key under models/>`). Re-run it after bumping
+   `@huggingface/transformers` or `onnxruntime-web`.
+
+4. Let the browser read those objects cross-origin. The function answers
+   with a redirect, so the *final* GET hits B2 directly and needs a bucket
+   CORS rule (B2 console → bucket → CORS rules), e.g.:
+
+   ```json
+   [{
+     "corsRuleName": "reads",
+     "allowedHeaders": ["*"],
+     "allowedOperations": ["b2_download_file_by_name", "b2_get_file"],
+     "allowedOrigins": ["*"],
+     "exposeHeaders": ["Content-Length", "Content-Range", "Accept-Ranges", "ETag"],
+     "maxAgeSeconds": 3600
+   }]
+   ```
+
+   `exposeHeaders` matters: the scanner reads `Content-Range` from Range
+   responses to plan its audio-byte fetches. The same rule covers signed
+   media streams, so playback seeking works with it too.
 
 ### 6. Promote yourself to admin
 
@@ -106,17 +165,21 @@ the Upgrade row keeps its "Premium is coming soon" state.
 supabase secrets set \
   PAYSTACK_SECRET_KEY=sk_test_your_key \
   PAYSTACK_PLAN_CODE=PLN_your_plan \
-  PAYSTACK_PLAN_AMOUNT=150000
+  PAYSTACK_PLAN_AMOUNT=150000 \
+  PAYSTACK_PAYMENT_PAGE=https://paystack.shop/pay_your_slug
 ```
 
-The `checkout` function initializes the transaction for the signed-in user
-and returns the hosted authorization URL; after the browser returns the app
-calls `paystack-verify` for an instant grant, while `paystack-webhook`
-stays the source of truth — it verifies the `x-paystack-signature` HMAC,
-logs each raw payload once into `billing_events`, and flips
-`profiles.is_premium` as the service role.
+When `PAYSTACK_PAYMENT_PAGE` is set (preferred — a subscription page bound
+to the same plan), `checkout` returns that link with the payer's email
+prefilled and locked (`read-only=email`); otherwise it initializes a
+transaction directly. After the browser returns the app calls
+`paystack-verify` for an instant grant (metadata id or exact payer-email
+match), while `paystack-webhook` stays the source of truth — it verifies
+the `x-paystack-signature` HMAC, logs each raw payload once into
+`billing_events`, resolves the account by metadata, payer email, or stored
+customer code, and flips `profiles.is_premium` as the service role.
 
-Google Play / App Store in-app billing come later (Phases 11–12); their
+Google Play / App Store in-app billing come later (Phases 12–13); their
 secret placeholders live in `.env.example` until the developer accounts
 exist. Everywhere else — web, smart TV browser, sideloaded Android — falls
 back to Paystack.
@@ -131,27 +194,173 @@ back to Paystack.
 | `npm run lint` | ESLint |
 | `npm run typecheck` | `tsc --noEmit` (app + edge functions) |
 | `npm test` | `node --test` unit tests (SigV4 presigning, …) |
+| `node scripts/upload-whisper-model.mjs` | Push Whisper weights + ORT wasm into the model bucket |
 | `npx expo export --platform web` | Static PWA build into `dist/` |
 
 Native builds go through EAS (`eas build -p android --profile preview`, see
 `eas.json` — `android-tv` profile enables TV mode).
 
+## Home
+
+- **Hero carousel** — three slides that auto-advance every 4 seconds
+  (swipeable; pauses while a TV/keyboard focus sits on a CTA): the
+  admin-featured title first, then the newest upload, then the most-watched
+  title ("Trending", via the `trending_movie_ids` RPC — without migration 7
+  the slot degrades to another new upload). Gold dots sit top-right.
+- **New Movies** shelf — the six latest uploads, with **See all** opening
+  `/category/new` (the full newest-first listing). Anything added in the
+  last 14 days carries a gold **New** badge on every poster (home,
+  category and search).
+- **Trending Now** — the eight most-watched titles, ranked by play/resume
+  events through the `trending_movie_ids` RPC (migration 7): what most
+  people are actually watching right now. Hides itself until the RPC is
+  applied.
+- **Popular Genres** — chips for the genres with the most active titles
+  (count on each card), one tap from `/category/{id}`.
+- **Continue Watching** — resume with a progress bar under the poster.
+- **Category rows** — capped at the 3 newest titles per genre so the feed
+  stays light no matter how large the catalog grows; every older title
+  stays one tap away behind **See all**, which opens `/category/{id}` —
+  the full paginated listing (30 per page) of that genre, newest first.
+  As new uploads arrive they take the shelf and push older ones out to
+  See all.
+- **Curated categories** — Western TV Shows, Nollywood Movies, Korean
+  Drama and Bollywood Movies ship as genres of their own: tag a movie
+  with one in the admin console and its home row, category page and
+  Popular Genres chip light up automatically.
+
+## Subtitles
+
+- **Audio scanner** — a movie with no uploaded file can build its own
+  source track: the sheet's **Scan audio for subtitles** card runs
+  on-device Whisper (`src/lib/transcribe/`) over the movie's audio —
+  mp4 sample-table parsing + Range fetches for the audio bytes only,
+  WebCodecs decode (with a silent capture-worklet fallback), then
+  `whisper-tiny` through transformers.js (WebGPU with wasm fallback) —
+  auto-detects the spoken language, converts the result to cues and
+  saves them through the `save-transcript` edge function as an
+  `origin: 'generated'` row. Any signed-in viewer can start a scan;
+  results are stored once per movie+language and shared by everyone,
+  and a second scan refuses to overwrite an admin's upload. Progress
+  survives reloads (IndexedDB checkpoints + 5-minute segment grid), the
+  engine runs in a hidden web frame / native WebView at `/transcribe`,
+  and model bytes come from the private bucket via the `whisper-model`
+  302 signer — no third-party STT ever sees the audio. Hidden on TV.
+- **Admin uploads** — the movie editor's **Subtitles** section takes
+  `.srt`/`.vtt` files: pick the language, upload, done. Files are parsed
+  and validated before saving (one file per movie + language, replace to
+  update, trash to remove).
+- **Player** — the language button in the player's top bar opens the
+  subtitle sheet, which keeps the two sources apart on purpose:
+  **Uploaded subtitles** (solid rows, cloud icon — the admin's file, played
+  exactly as uploaded, never routed through the generator) and **In-app
+  generator** (dashed gold rows, sparkles icon — languages with no file,
+  made on demand). The choice is remembered across titles, and a failed
+  generation leaves whatever subtitle was already on screen alone instead
+  of blanking it.
+- **Automatic language detection** — opening the sheet auto-detects which
+  language the movie's source subtitle track is actually written in (its
+  movie language, in the usual case) and shows it in the **Movie
+  language** card, so a title whose subtitles are in nobody's language is
+  obvious before you pick a target. Detection reads the cue text itself —
+  script rules and function-word counts first (`src/lib/subtitles.ts`,
+  free and instant), the translator's own auto-detect only when those
+  aren't confident — and the answer is stored in
+  `movie_subtitles.detected_language`, so the first viewer of a title pays
+  once and everyone after is instant. When neither answers, the card says
+  so and falls back to the file's declared label. Guests can see the
+  detection — only generating needs a session.
+- **In-app generator** — picking a language with no uploaded file calls
+  the `translate-subtitles` edge function, which translates the source
+  file (English preferred, otherwise the first upload — the sheet's card
+  tells you which one) chunk-by-chunk and caches the result in
+  `movie_subtitle_translations`. Repeat views load instantly; replacing
+  the source file purges its translations automatically. Translation
+  needs a signed-in session; uploaded files play for guests too.
+  Titles with no uploaded subtitle file can't be generated from — the
+  sheet says so instead of offering a dead list.
+
+## My Lists
+
+- **My List tab** in the navbar — the account's named lists ("Watch
+  later", "Favorites", …). Create one from the tab (name input + gold
+  **Create** button), tap to open `/list/{id}` (its titles, 30 per page),
+  long-press to arm a two-step delete.
+- **Limits** — free accounts create up to **5** lists, premium up to
+  **15**. The cap is enforced twice: a friendly check in the app (with a
+  Premium pointer) and `enforce_user_list_limit()` in the database, so the
+  API can't be bypassed.
+- **Adding titles** — every movie page has a **My List** button under
+  Play/Download. It opens a sheet with your lists (tap to toggle this
+  title in/out) plus an inline create field that saves the movie into the
+  new list straight away.
+- **Privacy** — `user_lists` / `user_list_items` are RLS-owned per
+  account (`user_id = auth.uid()`); list items also verify the list
+  belongs to the caller.
+
 ## Ads
 
-AdMob **Google test IDs** are seeded and wired up so development never serves
-real ads. Replace them before launch. Android TV has no AdMob support — the TV
-ad adapter is a no-op.
+Pre-roll and mid-roll breaks both play everywhere:
+
+- **Native builds** show AdMob interstitials using the unit ids from
+  Admin → Ads. **Google test IDs** are seeded so development never serves
+  real ads — replace them before launch (apps need AdMob
+  `ca-app-pub-…/…` ids; an AdSense `pub-…` publisher id is for websites
+  and will not work in the app).
+- **Web, Android TV and Expo Go** have no AdMob engine, so each break
+  plays the in-app house overlay (countdown + skip). The "fail open"
+  toggle only governs real AdMob request failures on native.
+- Mid-roll cues come from manual markers, the interval cadence, or — for
+  titles shorter than the interval — a single midpoint cue, so even
+  seconds-long test clips get a mid-roll.
 
 ## Admin console
 
 `Profile → Admin console` (admins only, enforced again by RLS):
 
-- **Catalog** — create/edit movies (sources, artwork, genres, premium
-  rendition), hide/show, feature one hero title, two-step delete.
+- **Catalog** — create/edit movies with zero URL entry: metadata (title,
+  synopsis, year, rating, genres, active/featured), **upload the video
+  file** (it streams to Backblaze B2; playback uses signed URLs) and
+  **upload the poster/backdrop** (public `artwork` bucket), hide/show,
+  feature one hero title (it opens the first slide of the auto-sliding
+  hero carousel), two-step delete (row first, then the B2 video
+  object and poster/backdrop are removed from storage — a warning surfaces
+  if storage cleanup partially fails). The runtime field accepts
+  decimals (`0.5` = 30 seconds) so sub-minute clips save — and they play
+  in full. Premium members get the same
+  object for streaming and download grants. Browser-based admin video
+  uploads also need a PUT CORS rule on the B2 bucket; the native app does
+  not. Saved movies also gain a **Subtitles** section for uploading
+  `.srt`/`.vtt` files per language (see **Subtitles** below).
 - **Ads** — pre/mid/banner toggles, mid-roll interval, fail-open, and the
   AdMob unit ids per placement (saved config is re-fetched by the player).
 - **Grants** — grant/revoke offline downloads for any user.
 - **Notify** — broadcast a push announcement to every registered device.
+
+### Video upload pipeline
+
+Picking a movie file runs pick → probe → compress → presigned B2 PUT →
+save, with live progress and a cancel button at every stage:
+
+- **Compression** (native builds only) targets ~150MB with a **quality
+  floor of 700 kbps** — the floor always wins, so long movies can exceed
+  150MB rather than getting crushed. Sources already under the target, or
+  where the floor would not shrink the file, are uploaded unchanged. Audio
+  is fixed at 128 kbps; resolution is preserved (cap 7680). The estimated
+  size and chosen bitrate are shown while compressing.
+- **Native only** — compression uses `react-native-compressor` (Nitro), so
+  it needs a dev build or store build, not Expo Go. In Expo Go the picker,
+  upload and progress UI all still work — compression is skipped and the
+  inline warning tells the admin to rebuild. The web console skips
+  compression entirely: the original file is uploaded and the UI states
+  "Browser uploads aren't compressed — use the mobile app for large
+  titles."
+- **Failure policy** — if compression fails the upload falls back to the
+  original file automatically and shows an inline warning; cancelling
+  anywhere aborts cleanly and deletes any temp output.
+- **Progress** — `probing` / `compressing` / `uploading` stages as one
+  bar with byte counts; browser uploads use XHR `upload.onprogress`
+  (native uses `expo-file-system` upload tasks).
 
 ## Notifications
 

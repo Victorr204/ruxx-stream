@@ -51,8 +51,30 @@ export type HomeRow = {
   movies: Movie[];
 };
 
+export type HeroLabel = "featured" | "new" | "trending";
+
+export type HeroItem = {
+  movie: Movie;
+  label: HeroLabel;
+};
+
 export type HomeFeed = {
-  featured: Movie | null;
+  hero: HeroItem[];
+  newReleases: Movie[];
+  trending: Movie[];
   continueWatching: ContinueItem[];
+  popularGenres: PopularGenre[];
   rows: HomeRow[];
+};
+
+export type PopularGenre = {
+  genre: Genre;
+  count: number;
+};
+
+export type UserList = {
+  id: string;
+  name: string;
+  created_at: string;
+  movie_count: number;
 };

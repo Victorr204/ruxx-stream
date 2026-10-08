@@ -89,7 +89,7 @@ function GlowOrb({ color, size, top, left, right, bottom, delay }) {
 }
 
 export default function Landing() {
-  const { theme } = useTheme();
+  const { theme, resolved } = useTheme();
 
   // Returning users can still open on "/" when the launch URL prefetch wins
   // over the boot gate's initialRouteName — hand off to the screen the boot
@@ -138,7 +138,7 @@ export default function Landing() {
 
   return (
     <View style={[styles.root, { backgroundColor: theme.background }]}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle={resolved === "dark" ? "light-content" : "dark-content"} />
 
       <SafeAreaView style={styles.safe} edges={["top", "left", "right", "bottom"]}>
         {/* ── Hero ── */}
