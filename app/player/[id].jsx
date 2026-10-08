@@ -13,7 +13,9 @@ import { useLocalSearchParams, router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import NetInfo from "@react-native-community/netinfo";
-import { GOLD } from "../../context/ThemeContext";
+import { LinearGradient } from "expo-linear-gradient";
+import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
+import { GOLD, GOLD_GRADIENT } from "../../context/ThemeContext";
 import { useAuthStore } from "../../src/stores/auth";
 import { useDownloadsStore } from "../../src/stores/downloads";
 import { useAdsConfig } from "../../src/stores/adsConfig";
@@ -28,6 +30,8 @@ import {
   saveWatchProgress,
 } from "../../src/lib/api";
 import { cueAt, languageLabel } from "../../src/lib/subtitles";
+import { formatMeta } from "../../src/lib/format";
+import { qualityLabel } from "../../src/lib/quality";
 import {
   RESUME_THRESHOLD_SECONDS,
   buildCuePoints,
@@ -38,7 +42,8 @@ import {
 } from "../../src/lib/playback";
 import { canUseNativeAds, showNativeInterstitial } from "../../src/lib/ads";
 import { AdOverlay } from "../../src/components/AdOverlay";
-import { PlayerEngine } from "../../src/components/PlayerEngine";
+import { IDLE_QUALITY, PlayerEngine } from "../../src/components/PlayerEngine";
+import QualitySheet from "../../src/components/QualitySheet";
 import SubtitleSheet from "../../src/components/SubtitleSheet";
 import ScanEngine from "../../src/components/ScanEngine";
 
@@ -52,6 +57,7 @@ import ScanEngine from "../../src/components/ScanEngine";
 
 const CONTROLS_HIDE_MS = 4500;
 const SUBTITLE_PREF_KEY = "ruxx.subtitle.language";
+const QUALITY_PREF_KEY = "ruxx.quality.height";
 
 const EMPTY_LOAD = {
   id: null,
@@ -128,6 +134,13 @@ export default function Player() {
   const [subsPending, setSubsPending] = useState("");
   const [subsError, setSubsError] = useState(null);
   const [subtitleSheet, setSubtitleSheet] = useState(false);
+
+  const [quality, setQuality] = useState(IDLE_QUALITY);
+  const [qualitySheet, setQualitySheet] = useState(false);
+  const qualityLevelsKeyRef = useRef("");
+  const qualityAppliedRef = useRef("");
+  const qualityPrefRef = useRef(null);
+  const qualityPrefLoadedRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -394,12 +407,77 @@ export default function Player() {
     ensureStarted();
   }, [phase, ensureStarted]);
 
+  // ---- Resolution picker -------------------------------------------------
+  // The engine reports level lists + auto/current updates through onQuality;
+  // the saved preference ("auto" | a concrete height) is applied once per
+  // level set so every new source picks up the viewer's last choice.
+  const handleQuality = useCallback((state) => {
+    if (mountedRef.current) setQuality(state);
+  }, []);
+
+  const applyQualityPref = useCallback(() => {
+    const handle = engineRef.current;
+    if (!handle || !qualityPrefLoadedRef.current) return;
+    const key = qualityLevelsKeyRef.current;
+    if (!key || key === qualityAppliedRef.current) return;
+    qualityAppliedRef.current = key;
+    handle.setQuality(qualityPrefRef.current);
+  }, []);
+
+  const qualityLevelsKey = quality.levels.length
+    ? quality.levels.map((level) => `${level.id}:${level.bitrate ?? 0}`).join("|")
+    : "";
+
+  useEffect(() => {
+    qualityLevelsKeyRef.current = qualityLevelsKey;
+  }, [qualityLevelsKey]);
+
+  // A fresh engine or swapped-in playlist re-keys the list → re-apply.
+  useEffect(() => {
+    if (!qualityLevelsKey) {
+      qualityAppliedRef.current = "";
+      return;
+    }
+    applyQualityPref();
+  }, [qualityLevelsKey, applyQualityPref]);
+
+  // Restore the saved resolution preference once per session.
+  useEffect(() => {
+    let cancelled = false;
+    AsyncStorage.getItem(QUALITY_PREF_KEY)
+      .then((raw) => {
+        if (cancelled) return;
+        const parsed = raw && raw !== "auto" ? Number.parseInt(raw, 10) : null;
+        qualityPrefRef.current = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+        qualityPrefLoadedRef.current = true;
+        applyQualityPref();
+      })
+      .catch(() => {
+        qualityPrefLoadedRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyQualityPref]);
+
+  const handleQualitySelect = useCallback((height) => {
+    qualityPrefRef.current = height;
+    // User's explicit choice wins over the pending pref for this level set.
+    qualityAppliedRef.current = qualityLevelsKeyRef.current;
+    AsyncStorage.setItem(QUALITY_PREF_KEY, height === null ? "auto" : String(height)).catch(
+      () => undefined
+    );
+    engineRef.current?.setQuality(height);
+    setQualitySheet(false);
+  }, []);
+
   const handleEngineReady = useCallback(
     (handle) => {
       engineRef.current = handle;
+      applyQualityPref();
       ensureStarted();
     },
-    [ensureStarted]
+    [ensureStarted, applyQualityPref]
   );
 
   const finishAdBreak = useCallback(
@@ -643,6 +721,11 @@ export default function Player() {
 
   const busy = phase === "loading" || phase === "preroll";
   const title = movie?.title ?? "Now playing";
+  const movieMeta = movie ? formatMeta(movie) : "";
+  const qualitySelectable = quality.levels.length > 1;
+  const qualityStatic = quality.levels.length === 1;
+  const qualityPill =
+    quality.auto || quality.currentHeight == null ? "Auto" : qualityLabel(quality.currentHeight);
   const watchedFraction = duration > 0 ? Math.min(1, position / duration) : 0;
   const activeCue = subCues.length > 0 ? cueAt(subCues, position) : null;
 
@@ -660,6 +743,7 @@ export default function Player() {
           }}
           onEnded={handleEnded}
           onError={handleEngineError}
+          onQuality={handleQuality}
         />
       ) : null}
 
@@ -676,21 +760,73 @@ export default function Player() {
 
       {/* Controls */}
       {controlsVisible && !adBreak && phase === "playing" ? (
-        <View style={styles.controls} pointerEvents="box-none">
+        <Animated.View
+          entering={FadeIn.duration(170)}
+          exiting={FadeOut.duration(200)}
+          style={styles.controls}
+          pointerEvents="box-none"
+        >
+          <LinearGradient
+            colors={["rgba(0,0,0,0.8)", "rgba(0,0,0,0.35)", "transparent"]}
+            style={styles.topScrim}
+            pointerEvents="none"
+          />
+          <LinearGradient
+            colors={["transparent", "rgba(0,0,0,0.4)", "rgba(0,0,0,0.85)"]}
+            style={styles.bottomScrim}
+            pointerEvents="none"
+          />
+
           <SafeAreaView edges={["top"]} style={styles.topBar} pointerEvents="box-none">
             <TouchableOpacity
-              style={styles.iconBtn}
+              style={styles.glassBtn}
               onPress={goBack}
               accessibilityRole="button"
               accessibilityLabel="Leave player"
             >
               <Ionicons name="chevron-back" size={22} color="#fff" />
             </TouchableOpacity>
-            <Text numberOfLines={1} style={styles.title}>
-              {title}
-            </Text>
+            <View style={styles.topTitles}>
+              <Text numberOfLines={1} style={styles.title}>
+                {title}
+              </Text>
+              {movieMeta ? (
+                <Text numberOfLines={1} style={styles.topMeta}>
+                  {movieMeta}
+                </Text>
+              ) : null}
+            </View>
+            {qualitySelectable ? (
+              <TouchableOpacity
+                style={[styles.qualityPill, !quality.auto && styles.qualityPillActive]}
+                onPress={() => {
+                  showControls();
+                  setQualitySheet(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={`Quality: ${qualityPill}`}
+              >
+                <Text
+                  style={[
+                    styles.qualityPillText,
+                    !quality.auto && styles.qualityPillTextActive,
+                  ]}
+                >
+                  {qualityPill}
+                </Text>
+                <Ionicons
+                  name="chevron-down"
+                  size={12}
+                  color={!quality.auto ? GOLD : "rgba(255,255,255,0.8)"}
+                />
+              </TouchableOpacity>
+            ) : qualityStatic ? (
+              <View style={styles.qualityPill}>
+                <Text style={styles.qualityPillText}>{qualityPill}</Text>
+              </View>
+            ) : null}
             <TouchableOpacity
-              style={styles.iconBtn}
+              style={styles.glassBtn}
               onPress={() => {
                 setSubsError(null);
                 setSubtitleSheet(true);
@@ -700,41 +836,57 @@ export default function Player() {
             >
               <Ionicons
                 name={subLang ? "language" : "language-outline"}
-                size={21}
+                size={20}
                 color={subLang ? GOLD : "#fff"}
               />
             </TouchableOpacity>
           </SafeAreaView>
 
           <View style={styles.centerRow} pointerEvents="box-none">
-            <TouchableOpacity
-              style={styles.seekBtn}
-              onPress={() => seekBy(-10)}
-              accessibilityRole="button"
-              accessibilityLabel="Rewind 10 seconds"
-            >
-              <Ionicons name="play-back" size={24} color="#fff" />
+            <View style={styles.seekGroup}>
+              <TouchableOpacity
+                style={styles.seekBtn}
+                onPress={() => seekBy(-10)}
+                accessibilityRole="button"
+                accessibilityLabel="Rewind 10 seconds"
+              >
+                <Ionicons name="play-back" size={21} color="#fff" />
+              </TouchableOpacity>
               <Text style={styles.seekLabel}>10</Text>
-            </TouchableOpacity>
+            </View>
 
             <TouchableOpacity
-              style={styles.playBtn}
               onPress={togglePlay}
+              activeOpacity={0.9}
               accessibilityRole="button"
               accessibilityLabel={playing ? "Pause" : "Play"}
             >
-              <Ionicons name={playing ? "pause" : "play"} size={30} color="#0a0a0a" />
+              <LinearGradient
+                colors={GOLD_GRADIENT}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.playBtn}
+              >
+                <Ionicons
+                  name={playing ? "pause" : "play"}
+                  size={30}
+                  color="#0a0a0a"
+                  style={playing ? undefined : styles.playIconNudge}
+                />
+              </LinearGradient>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.seekBtn}
-              onPress={() => seekBy(10)}
-              accessibilityRole="button"
-              accessibilityLabel="Forward 10 seconds"
-            >
-              <Ionicons name="play-forward" size={24} color="#fff" />
+            <View style={styles.seekGroup}>
+              <TouchableOpacity
+                style={styles.seekBtn}
+                onPress={() => seekBy(10)}
+                accessibilityRole="button"
+                accessibilityLabel="Forward 10 seconds"
+              >
+                <Ionicons name="play-forward" size={21} color="#fff" />
+              </TouchableOpacity>
               <Text style={styles.seekLabel}>10</Text>
-            </TouchableOpacity>
+            </View>
           </View>
 
           <SafeAreaView edges={["bottom"]} style={styles.bottomBar} pointerEvents="box-none">
@@ -747,12 +899,17 @@ export default function Player() {
               accessibilityLabel={`Seek. ${formatTime(position)} of ${formatTime(duration)}`}
             >
               <View style={styles.trackBg} />
-              <View style={[styles.trackPlayed, { width: `${watchedFraction * 100}%` }]} />
+              <LinearGradient
+                colors={GOLD_GRADIENT}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={[styles.trackPlayed, { width: `${watchedFraction * 100}%` }]}
+              />
               <View style={[styles.trackThumb, { left: `${watchedFraction * 100}%` }]} />
             </Pressable>
-            <Text style={styles.time}>{formatTime(duration)}</Text>
+            <Text style={[styles.time, styles.timeRight]}>{formatTime(duration)}</Text>
           </SafeAreaView>
-        </View>
+        </Animated.View>
       ) : null}
 
       {/* Subtitles */}
@@ -775,12 +932,14 @@ export default function Player() {
 
       {/* Loading / waiting-for-ad */}
       {busy && !showError ? (
-        <SafeAreaView style={styles.centerCard}>
-          <ActivityIndicator color={GOLD} size="large" />
-          <Text style={styles.centerTitle}>
-            {phase === "preroll" ? "Your break starts shortly…" : "Preparing your stream…"}
-          </Text>
-          <Text style={styles.centerSub}>{title}</Text>
+        <SafeAreaView style={styles.cardBackdrop}>
+          <View style={styles.card}>
+            <ActivityIndicator color={GOLD} size="large" />
+            <Text style={styles.centerTitle}>
+              {phase === "preroll" ? "Your break starts shortly…" : "Preparing your stream…"}
+            </Text>
+            <Text style={styles.centerSub}>{title}</Text>
+          </View>
         </SafeAreaView>
       ) : null}
 
@@ -802,60 +961,73 @@ export default function Player() {
         onClose={() => setSubtitleSheet(false)}
       />
 
+      <QualitySheet
+        visible={qualitySheet}
+        levels={quality.levels}
+        auto={quality.auto}
+        currentHeight={quality.currentHeight}
+        onSelect={handleQualitySelect}
+        onClose={() => setQualitySheet(false)}
+      />
+
       {/* Finished */}
       {phase === "ended" && !adBreak && !showError ? (
-        <SafeAreaView style={styles.centerCard}>
-          <View style={styles.doneBadge}>
-            <Ionicons name="checkmark" size={30} color="#0a0a0a" />
-          </View>
-          <Text style={styles.centerTitle}>Thanks for watching</Text>
-          <Text style={styles.centerSub}>{title}</Text>
-          <View style={styles.doneRow}>
-            <TouchableOpacity
-              style={styles.donePrimary}
-              onPress={togglePlay}
-              accessibilityRole="button"
-              accessibilityLabel="Watch again"
-            >
-              <Ionicons name="refresh" size={17} color="#0a0a0a" />
-              <Text style={styles.donePrimaryText}>Watch again</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.doneGhost}
-              onPress={goBack}
-              accessibilityRole="button"
-              accessibilityLabel="Back to browse"
-            >
-              <Text style={styles.doneGhostText}>Done</Text>
-            </TouchableOpacity>
+        <SafeAreaView style={styles.cardBackdrop}>
+          <View style={styles.card}>
+            <View style={styles.doneBadge}>
+              <Ionicons name="checkmark" size={30} color="#0a0a0a" />
+            </View>
+            <Text style={styles.centerTitle}>Thanks for watching</Text>
+            <Text style={styles.centerSub}>{title}</Text>
+            <View style={styles.doneRow}>
+              <TouchableOpacity
+                style={styles.donePrimary}
+                onPress={togglePlay}
+                accessibilityRole="button"
+                accessibilityLabel="Watch again"
+              >
+                <Ionicons name="refresh" size={17} color="#0a0a0a" />
+                <Text style={styles.donePrimaryText}>Watch again</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.doneGhost}
+                onPress={goBack}
+                accessibilityRole="button"
+                accessibilityLabel="Back to browse"
+              >
+                <Text style={styles.doneGhostText}>Done</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </SafeAreaView>
       ) : null}
 
       {/* Error */}
       {showError ? (
-        <SafeAreaView style={styles.centerCard}>
-          <Ionicons name="alert-circle-outline" size={38} color="#ff6b6b" />
-          <Text style={styles.centerTitle}>Can&apos;t play this title</Text>
-          <Text style={styles.centerSub}>{errorMessage}</Text>
-          <View style={styles.doneRow}>
-            <TouchableOpacity
-              style={styles.donePrimary}
-              onPress={retry}
-              accessibilityRole="button"
-              accessibilityLabel="Retry playback"
-            >
-              <Ionicons name="refresh" size={17} color="#0a0a0a" />
-              <Text style={styles.donePrimaryText}>Try again</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.doneGhost}
-              onPress={goBack}
-              accessibilityRole="button"
-              accessibilityLabel="Back to browse"
-            >
-              <Text style={styles.doneGhostText}>Back</Text>
-            </TouchableOpacity>
+        <SafeAreaView style={styles.cardBackdrop}>
+          <View style={styles.card}>
+            <Ionicons name="alert-circle-outline" size={38} color="#ff6b6b" />
+            <Text style={styles.centerTitle}>Can&apos;t play this title</Text>
+            <Text style={styles.centerSub}>{errorMessage}</Text>
+            <View style={styles.doneRow}>
+              <TouchableOpacity
+                style={styles.donePrimary}
+                onPress={retry}
+                accessibilityRole="button"
+                accessibilityLabel="Retry playback"
+              >
+                <Ionicons name="refresh" size={17} color="#0a0a0a" />
+                <Text style={styles.donePrimaryText}>Try again</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.doneGhost}
+                onPress={goBack}
+                accessibilityRole="button"
+                accessibilityLabel="Back to browse"
+              >
+                <Text style={styles.doneGhostText}>Back</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </SafeAreaView>
       ) : null}
@@ -867,89 +1039,147 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#000" },
   tapLayer: { ...StyleSheet.absoluteFill, zIndex: 1 },
   controls: { ...StyleSheet.absoluteFill, zIndex: 10, justifyContent: "space-between" },
+  topScrim: { position: "absolute", top: 0, left: 0, right: 0, height: 150 },
+  bottomScrim: { position: "absolute", bottom: 0, left: 0, right: 0, height: 180 },
   topBar: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingTop: 8,
+    paddingHorizontal: 14,
+    paddingTop: 10,
     gap: 10,
-    backgroundColor: "rgba(0,0,0,0.55)",
   },
-  iconBtn: {
+  glassBtn: {
     width: 40,
     height: 40,
     borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.1)",
+    backgroundColor: "rgba(255,255,255,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
     alignItems: "center",
     justifyContent: "center",
   },
-  iconBtnSpacer: { width: 40 },
-  title: { flex: 1, color: "#fff", fontSize: 15.5, fontWeight: "800" },
+  topTitles: { flex: 1, gap: 1 },
+  title: { color: "#fff", fontSize: 15.5, fontWeight: "800" },
+  topMeta: { color: "rgba(255,255,255,0.58)", fontSize: 11, fontWeight: "700" },
+  qualityPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+  },
+  qualityPillActive: {
+    backgroundColor: "rgba(232,184,74,0.16)",
+    borderColor: "rgba(232,184,74,0.55)",
+  },
+  qualityPillText: { color: "rgba(255,255,255,0.92)", fontSize: 12.5, fontWeight: "800" },
+  qualityPillTextActive: { color: GOLD },
   centerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 30,
+    gap: 36,
   },
-  seekBtn: { alignItems: "center", gap: 2 },
-  seekLabel: { color: "rgba(255,255,255,0.75)", fontSize: 10.5, fontWeight: "800" },
-  playBtn: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: GOLD,
+  seekGroup: { alignItems: "center", gap: 5 },
+  seekBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
     alignItems: "center",
     justifyContent: "center",
-    paddingLeft: 4,
   },
+  seekLabel: { color: "rgba(255,255,255,0.72)", fontSize: 10.5, fontWeight: "800" },
+  playBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: GOLD,
+    shadowOpacity: 0.5,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 12,
+  },
+  playIconNudge: { marginLeft: 3 },
   bottomBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingBottom: 10,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
   },
   time: { color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: "700", minWidth: 46 },
-  track: { flex: 1, height: 26, justifyContent: "center" },
+  timeRight: { textAlign: "right" },
+  track: { flex: 1, height: 30, justifyContent: "center" },
   trackBg: {
     position: "absolute",
     left: 0,
     right: 0,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "rgba(255,255,255,0.25)",
+    height: 4.5,
+    borderRadius: 2.5,
+    backgroundColor: "rgba(255,255,255,0.28)",
   },
   trackPlayed: {
     position: "absolute",
     left: 0,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: GOLD,
+    height: 4.5,
+    borderRadius: 2.5,
   },
   trackThumb: {
     position: "absolute",
-    width: 13,
-    height: 13,
-    borderRadius: 7,
-    backgroundColor: GOLD,
-    marginLeft: -6.5,
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    borderWidth: 3,
+    borderColor: GOLD,
+    marginLeft: -7.5,
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 4,
   },
-  centerCard: {
+  cardBackdrop: {
     ...StyleSheet.absoluteFill,
     zIndex: 5,
     alignItems: "center",
     justifyContent: "center",
+    padding: 24,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  card: {
+    width: "100%",
+    maxWidth: 360,
+    alignItems: "center",
+    justifyContent: "center",
     gap: 10,
-    padding: 30,
-    backgroundColor: "#000",
+    paddingVertical: 30,
+    paddingHorizontal: 24,
+    borderRadius: 28,
+    backgroundColor: "rgba(12,12,16,0.94)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    shadowColor: "#000",
+    shadowOpacity: 0.45,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
   },
   centerTitle: { color: "#fff", fontSize: 17, fontWeight: "800", textAlign: "center" },
   centerSub: {
     color: "rgba(255,255,255,0.55)",
     fontSize: 13,
     textAlign: "center",
-    maxWidth: 320,
+    maxWidth: 300,
   },
   subtitleLayer: {
     position: "absolute",
@@ -971,6 +1201,9 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     overflow: "hidden",
     maxWidth: "94%",
+    textShadowColor: "rgba(0,0,0,0.9)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 5,
   },
   subtitlePill: {
     flexDirection: "row",
@@ -990,8 +1223,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 4,
+    shadowColor: GOLD,
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 8,
   },
-  doneRow: { flexDirection: "row", gap: 12, marginTop: 14 },
+  doneRow: { flexDirection: "row", gap: 12, marginTop: 14, flexWrap: "wrap", justifyContent: "center" },
   donePrimary: {
     flexDirection: "row",
     alignItems: "center",

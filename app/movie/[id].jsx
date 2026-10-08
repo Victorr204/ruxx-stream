@@ -16,11 +16,12 @@ import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme, GOLD, GOLD_GRADIENT } from "../../context/ThemeContext";
 import AppAlert from "../../utils/AppAlert";
-import { useMovie } from "../../src/hooks/useMovies";
+import { useMovie, useForYou } from "../../src/hooks/useMovies";
 import { fetchListIdsForMovie, fetchWatchProgress } from "../../src/lib/api";
 import { formatMeta, formatRuntime } from "../../src/lib/format";
 import { useDownloadsStore } from "../../src/stores/downloads";
 import ListSheet from "../../src/components/ListSheet";
+import MovieRow from "../../src/components/MovieRow";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const BACKDROP_H = Math.min(Math.round(SCREEN_W * 0.56), 380);
@@ -33,6 +34,7 @@ export default function MovieDetail() {
   const params = useLocalSearchParams();
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const { data: movie, loading, error, reload } = useMovie(id);
+  const forYou = useForYou(movie);
 
   const [resumeState, setResumeState] = useState({ id: null, position: 0 });
   const [playFocused, setPlayFocused] = useState(false);
@@ -327,6 +329,33 @@ export default function MovieDetail() {
             {movie.release_year ? `© ${movie.release_year} • ` : ""}Licensed for streaming on ruxx stream
           </Text>
         </View>
+
+        {/* ── For You ── */}
+        {forYou.items.length > 0 && (
+          <View style={styles.forYouBlock}>
+            <MovieRow
+              key={forYou.batchKey}
+              title="For You"
+              movies={forYou.items}
+              enterDelay={80}
+              onPressMovie={(suggested) => router.push(`/movie/${suggested.id}`)}
+            />
+            {forYou.canSuggestMore && (
+              <TouchableOpacity
+                focusable
+                accessible
+                accessibilityRole="button"
+                accessibilityLabel="Suggest more titles"
+                activeOpacity={0.85}
+                onPress={forYou.suggestMore}
+                style={styles.suggestBtn}
+              >
+                <Ionicons name="refresh" size={16} color={GOLD} />
+                <Text style={styles.suggestText}>Suggest more</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
       </ScrollView>
 
       {/* ── Floating back ── */}
@@ -420,6 +449,21 @@ const styles = StyleSheet.create({
   description: { fontSize: 14.5, lineHeight: 21.5 },
 
   copyright: { fontSize: 11, marginTop: 8 },
+
+  forYouBlock: { marginTop: 6 },
+  suggestBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginHorizontal: 20,
+    height: 46,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "rgba(232,184,74,0.45)",
+    backgroundColor: "rgba(232,184,74,0.06)",
+  },
+  suggestText: { color: GOLD, fontSize: 14, fontWeight: "800", letterSpacing: 0.3 },
 
   backFloatingWrap: { position: "absolute", top: 0, left: 0 },
   backFloating: {

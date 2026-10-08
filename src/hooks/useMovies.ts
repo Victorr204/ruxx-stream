@@ -5,10 +5,12 @@ import {
   fetchListMovies,
   fetchListingMovies,
   fetchMovie,
+  fetchRelatedCandidates,
   fetchUserList,
   NEW_LISTING_SEGMENT,
   searchMovies,
 } from "../lib/api";
+import { FOR_YOU_BATCH, forYouBatch, rankRelated } from "../lib/forYou";
 import type { Genre, HomeFeed, Movie, UserList } from "../lib/types";
 
 // Data hooks around api.ts. Loading is *derived* from state instead of set
@@ -158,6 +160,73 @@ export function useMovie(id: string | undefined): MovieStateResult {
     loading,
     error: loading ? null : active ? state.error : id ? null : "Title not found",
     reload,
+  };
+}
+
+type ForYouState = {
+  id: string | null;
+  pool: Movie[];
+  start: number;
+};
+
+export type ForYouResult = {
+  /** The current batch of suggestions (empty while loading or on failure). */
+  items: Movie[];
+  loading: boolean;
+  /** Swaps the batch for the next one in the pool. */
+  suggestMore: () => void;
+  /** Only makes sense when more than one batch exists. */
+  canSuggestMore: boolean;
+  /** Remount key — changes per movie *and* per batch. */
+  batchKey: string;
+};
+
+/**
+ * The detail page's For You shelf: related titles (shared genres) ranked
+ * into a pool, handed out in fixed batches. `suggestMore` rotates the
+ * pool so the previous batch is replaced rather than appended to. Failures
+ * leave the shelf hidden — it is a nice-to-have, not the page's job.
+ */
+export function useForYou(movie: Movie | null): ForYouResult {
+  const [state, setState] = useState<ForYouState>({ id: null, pool: [], start: 0 });
+  const movieId = movie?.id ?? null;
+
+  useEffect(() => {
+    if (!movie || !movieId) return undefined;
+    let cancelled = false;
+    const genreIds = (movie.genres ?? []).map((genre) => genre.id);
+
+    fetchRelatedCandidates(genreIds, movieId)
+      .then((candidates) => {
+        if (cancelled) return;
+        setState({ id: movieId, pool: rankRelated(candidates, genreIds, movieId), start: 0 });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setState({ id: movieId, pool: [], start: 0 });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [movie, movieId]);
+
+  const active = !!movieId && state.id === movieId;
+  const batch = forYouBatch(active ? state.pool : [], state.start);
+
+  const suggestMore = useCallback(() => {
+    setState((s) => {
+      if (s.pool.length === 0) return s;
+      return { ...s, start: forYouBatch(s.pool, s.start).nextStart };
+    });
+  }, []);
+
+  return {
+    items: batch.items,
+    loading: !!movieId && !active,
+    suggestMore,
+    canSuggestMore: active && state.pool.length > FOR_YOU_BATCH,
+    batchKey: `${state.id ?? ""}:${state.start}`,
   };
 }
 

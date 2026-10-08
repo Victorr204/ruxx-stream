@@ -2,6 +2,7 @@ import { Platform } from "react-native";
 import { getSupabase } from "./supabase";
 import { planHero } from "./heroPlan";
 import { parseSubtitles, type SubtitleCue } from "./subtitles";
+import { FOR_YOU_FETCH_LIMIT, type RelatedCandidate } from "./forYou";
 import type {
   ContinueItem,
   Genre,
@@ -360,6 +361,37 @@ export async function fetchMovie(id: string): Promise<Movie | null> {
 
   const { movie_genres: _links, ...movie } = row as Movie & { movie_genres?: unknown };
   return { ...movie, genres };
+}
+
+/**
+ * Active titles to suggest on the detail page's For You shelf: everything
+ * sharing at least one genre with `genreIds`, newest first, minus the
+ * clicked title. Without genres to match, the newest active titles come
+ * back as the fallback pool (ranked — not filtered — by forYou.ts).
+ */
+export async function fetchRelatedCandidates(
+  genreIds: string[],
+  excludeId: string,
+  limit = FOR_YOU_FETCH_LIMIT
+): Promise<RelatedCandidate[]> {
+  let query = getSupabase()
+    .from("movies")
+    .select(`${MOVIE_COLS}, movie_genres!inner(genre_id)`)
+    .eq("is_active", true)
+    .neq("id", excludeId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (genreIds.length > 0) {
+    query = query.in("movie_genres.genre_id", genreIds);
+  }
+
+  const { data, error } = await query;
+  if (error) throw new Error(message(error));
+
+  return ((data ?? []) as unknown as MovieRowRecord[]).map((row) => {
+    const { movie_genres, ...movie } = row;
+    return { ...movie, genre_ids: (movie_genres ?? []).map((link) => link.genre_id) };
+  });
 }
 
 export type SubtitleOption = {
