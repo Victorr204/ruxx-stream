@@ -5,16 +5,20 @@ import {
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
-  Pressable,
+  PanResponder,
+  Platform,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import NetInfo from "@react-native-community/netinfo";
+import * as Haptics from "expo-haptics";
+import * as Brightness from "expo-brightness";
+import * as ScreenOrientation from "expo-screen-orientation";
 import { LinearGradient } from "expo-linear-gradient";
-import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
+import Animated, { FadeIn, FadeInDown, FadeInUp, FadeOut, ZoomIn } from "react-native-reanimated";
 import { GOLD, GOLD_GRADIENT } from "../../context/ThemeContext";
 import { useAuthStore } from "../../src/stores/auth";
 import { useDownloadsStore } from "../../src/stores/downloads";
@@ -44,6 +48,7 @@ import { canUseNativeAds, showNativeInterstitial } from "../../src/lib/ads";
 import { AdOverlay } from "../../src/components/AdOverlay";
 import { IDLE_QUALITY, PlayerEngine } from "../../src/components/PlayerEngine";
 import QualitySheet from "../../src/components/QualitySheet";
+import SpeedSheet from "../../src/components/SpeedSheet";
 import SubtitleSheet from "../../src/components/SubtitleSheet";
 import ScanEngine from "../../src/components/ScanEngine";
 
@@ -58,6 +63,33 @@ import ScanEngine from "../../src/components/ScanEngine";
 const CONTROLS_HIDE_MS = 4500;
 const SUBTITLE_PREF_KEY = "ruxx.subtitle.language";
 const QUALITY_PREF_KEY = "ruxx.quality.height";
+const SPEED_PREF_KEY = "ruxx.playback.speed";
+const DOUBLE_TAP_MS = 260;
+const RIPPLE_MS = 430;
+
+// Scrub gestures delegate to handlers wired up per-instance (refs are only
+// touched inside those event callbacks, never during render).
+const scrubActions = { grant: null, move: null, release: null, terminate: null };
+const scrubResponder = PanResponder.create({
+  onStartShouldSetPanResponder: () => true,
+  onMoveShouldSetPanResponder: () => true,
+  onPanResponderGrant: (e) => scrubActions.grant?.(e),
+  onPanResponderMove: (e) => scrubActions.move?.(e),
+  onPanResponderRelease: (e) => scrubActions.release?.(e),
+  onPanResponderTerminate: () => scrubActions.terminate?.(),
+});
+
+// The tap layer: taps (with double-tap seek) plus vertical swipes —
+// right half = volume, left half = brightness.
+const tapActions = { grant: null, move: null, release: null, terminate: null };
+const tapResponder = PanResponder.create({
+  onStartShouldSetPanResponder: () => true,
+  onMoveShouldSetPanResponder: () => true,
+  onPanResponderGrant: (e) => tapActions.grant?.(e),
+  onPanResponderMove: (e) => tapActions.move?.(e),
+  onPanResponderRelease: (e) => tapActions.release?.(e),
+  onPanResponderTerminate: () => tapActions.terminate?.(),
+});
 
 const EMPTY_LOAD = {
   id: null,
@@ -82,6 +114,7 @@ export default function Player() {
   const params = useLocalSearchParams();
   const movieId = Array.isArray(params.id) ? params.id[0] : params.id;
   const profile = useAuthStore((s) => s.profile);
+  const insets = useSafeAreaInsets();
 
   const adsLoaded = useAdsConfig((s) => s.loaded);
   const loadAds = useAdsConfig((s) => s.load);
@@ -113,7 +146,19 @@ export default function Player() {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [controlsVisible, setControlsVisible] = useState(false);
-  const [trackWidth, setTrackWidth] = useState(1);
+  const [scrub, setScrub] = useState(null); // { fraction, time } while dragging the scrubber
+  const [ripple, setRipple] = useState(null); // double-tap seek feedback
+  const [gestureHud, setGestureHud] = useState(null); // { type: volume|brightness, value }
+  const [fullscreen, setFullscreen] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const [speedSheet, setSpeedSheet] = useState(false);
+  const scrubWidthRef = useRef(1);
+  const tapWidthRef = useRef(1);
+  const tapHeightRef = useRef(1);
+  const volumeRef = useRef(1);
+  const brightnessRef = useRef(null);
+  const gestureRef = useRef(null);
+  const hudTimerRef = useRef(null);
 
   const engineRef = useRef(null);
   const adBreakRef = useRef(null);
@@ -141,13 +186,50 @@ export default function Player() {
   const qualityAppliedRef = useRef("");
   const qualityPrefRef = useRef(null);
   const qualityPrefLoadedRef = useRef(false);
+  const speedPrefRef = useRef(1);
+  const speedPrefLoadedRef = useRef(false);
+  const tapInfoRef = useRef({ time: 0, x: 0 });
+  const tapTimerRef = useRef(null);
+  const rippleTimerRef = useRef(null);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+      if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
+      if (rippleTimerRef.current) clearTimeout(rippleTimerRef.current);
+      if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
     };
+  }, []);
+
+  // Rotation must always work inside the player (and a fullscreen lock from
+  // the deck button overrides a system auto-rotate-off setting).
+  useEffect(() => {
+    if (Platform.OS === "web") return undefined;
+    ScreenOrientation.unlockAsync().catch(() => {});
+    return () => {
+      ScreenOrientation.unlockAsync().catch(() => {});
+    };
+  }, []);
+
+  // Web fullscreen: keep state honest when the user hits Esc / browser UI.
+  useEffect(() => {
+    if (Platform.OS !== "web") return undefined;
+    const onChange = () => setFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  // Seed the brightness gesture with the current screen level (native).
+  useEffect(() => {
+    if (Platform.OS === "web") return undefined;
+    Brightness.getBrightnessAsync()
+      .then((value) => {
+        brightnessRef.current = value;
+      })
+      .catch(() => {});
+    return undefined;
   }, []);
 
   // Wipe the decrypted playback copy once this player goes away (or the
@@ -424,6 +506,13 @@ export default function Player() {
     handle.setQuality(qualityPrefRef.current);
   }, []);
 
+  const applySpeedPref = useCallback(() => {
+    const handle = engineRef.current;
+    if (!handle || !speedPrefLoadedRef.current) return;
+    handle.setRate(speedPrefRef.current);
+    setSpeed(speedPrefRef.current);
+  }, []);
+
   const qualityLevelsKey = quality.levels.length
     ? quality.levels.map((level) => `${level.id}:${level.bitrate ?? 0}`).join("|")
     : "";
@@ -441,24 +530,32 @@ export default function Player() {
     applyQualityPref();
   }, [qualityLevelsKey, applyQualityPref]);
 
-  // Restore the saved resolution preference once per session.
+  // Restore the saved resolution + speed preferences once per session.
   useEffect(() => {
     let cancelled = false;
-    AsyncStorage.getItem(QUALITY_PREF_KEY)
-      .then((raw) => {
+    Promise.all([
+      AsyncStorage.getItem(QUALITY_PREF_KEY).catch(() => null),
+      AsyncStorage.getItem(SPEED_PREF_KEY).catch(() => null),
+    ])
+      .then(([qualityRaw, speedRaw]) => {
         if (cancelled) return;
-        const parsed = raw && raw !== "auto" ? Number.parseInt(raw, 10) : null;
+        const parsed = qualityRaw && qualityRaw !== "auto" ? Number.parseInt(qualityRaw, 10) : null;
         qualityPrefRef.current = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
         qualityPrefLoadedRef.current = true;
+        const speedParsed = Number.parseFloat(speedRaw ?? "");
+        speedPrefRef.current = Number.isFinite(speedParsed) && speedParsed > 0 ? speedParsed : 1;
+        speedPrefLoadedRef.current = true;
         applyQualityPref();
+        applySpeedPref();
       })
       .catch(() => {
         qualityPrefLoadedRef.current = true;
+        speedPrefLoadedRef.current = true;
       });
     return () => {
       cancelled = true;
     };
-  }, [applyQualityPref]);
+  }, [applyQualityPref, applySpeedPref]);
 
   const handleQualitySelect = useCallback((height) => {
     qualityPrefRef.current = height;
@@ -471,13 +568,22 @@ export default function Player() {
     setQualitySheet(false);
   }, []);
 
+  const handleSpeedSelect = useCallback((rate) => {
+    speedPrefRef.current = rate;
+    setSpeed(rate);
+    AsyncStorage.setItem(SPEED_PREF_KEY, String(rate)).catch(() => undefined);
+    engineRef.current?.setRate(rate);
+    setSpeedSheet(false);
+  }, []);
+
   const handleEngineReady = useCallback(
     (handle) => {
       engineRef.current = handle;
       applyQualityPref();
+      applySpeedPref();
       ensureStarted();
     },
-    [ensureStarted, applyQualityPref]
+    [ensureStarted, applyQualityPref, applySpeedPref]
   );
 
   const finishAdBreak = useCallback(
@@ -696,20 +802,205 @@ export default function Player() {
     [seekTo]
   );
 
-  const seekToFraction = useCallback(
-    (fraction) => {
-      const total = latestRef.current.duration;
-      if (!total) return;
-      seekTo(Math.max(0, Math.min(1, fraction)) * total);
-    },
-    [seekTo]
-  );
+  // Tap-layer gestures: double-tap either half seeks ∓10s with a ripple, a
+  // lone tap toggles controls, and a vertical swipe adjusts volume (right
+  // half) or brightness (left half).
+  useEffect(() => {
+    const SLOP = 12;
+
+    const showHud = (type, value) => {
+      if (hudTimerRef.current) {
+        clearTimeout(hudTimerRef.current);
+        hudTimerRef.current = null;
+      }
+      if (mountedRef.current) setGestureHud({ type, value });
+    };
+
+    const scheduleHudHide = () => {
+      if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
+      hudTimerRef.current = setTimeout(() => {
+        hudTimerRef.current = null;
+        if (mountedRef.current) setGestureHud(null);
+      }, 750);
+    };
+
+    const applySwipe = (g, e) => {
+      const dy = e.nativeEvent.locationY - g.y;
+      const range = Math.max(1, tapHeightRef.current) * 0.5;
+      const value = Math.max(0, Math.min(1, g.start - dy / range));
+      if (g.side === "right") {
+        volumeRef.current = value;
+        engineRef.current?.setVolume(value);
+        showHud("volume", value);
+      } else {
+        brightnessRef.current = value;
+        Brightness.setBrightnessAsync(value).catch(() => {});
+        showHud("brightness", value);
+      }
+    };
+
+    tapActions.grant = (e) => {
+      gestureRef.current = {
+        x: e.nativeEvent.locationX,
+        y: e.nativeEvent.locationY,
+        time: Date.now(),
+        mode: "pending",
+        side: e.nativeEvent.locationX < tapWidthRef.current / 2 ? "left" : "right",
+        start: 1,
+      };
+    };
+
+    tapActions.move = (e) => {
+      const g = gestureRef.current;
+      if (!g) return;
+      if (g.mode === "swipe") {
+        applySwipe(g, e);
+        return;
+      }
+      if (g.mode === "ignored") return;
+      const dx = e.nativeEvent.locationX - g.x;
+      const dy = e.nativeEvent.locationY - g.y;
+      if (Math.abs(dy) < SLOP && Math.abs(dx) < SLOP) return;
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        g.mode = "ignored"; // horizontal drags aren't gestures on the video
+        return;
+      }
+      if (g.side === "left" && Platform.OS === "web") {
+        g.mode = "ignored"; // browsers don't expose screen brightness
+        return;
+      }
+      g.mode = "swipe";
+      g.start = g.side === "right" ? volumeRef.current : (brightnessRef.current ?? 1);
+      if (g.side === "left" && brightnessRef.current == null) {
+        Brightness.getBrightnessAsync()
+          .then((value) => {
+            if (gestureRef.current === g && g.mode === "swipe" && brightnessRef.current == null) {
+              brightnessRef.current = value;
+              g.start = value;
+            }
+          })
+          .catch(() => {});
+      }
+      applySwipe(g, e);
+    };
+
+    tapActions.release = (e) => {
+      const g = gestureRef.current;
+      gestureRef.current = null;
+      if (!g) return;
+      if (g.mode === "swipe") {
+        scheduleHudHide();
+        return;
+      }
+      if (g.mode === "ignored") return;
+
+      const x = e.nativeEvent.locationX;
+      const width = tapWidthRef.current > 1 ? tapWidthRef.current : 0;
+      const leftSide = x < width / 2;
+      const now = Date.now();
+      const info = tapInfoRef.current;
+      const isDouble = now - info.time < DOUBLE_TAP_MS && (info.x < width / 2) === leftSide;
+
+      if (isDouble) {
+        if (tapTimerRef.current) {
+          clearTimeout(tapTimerRef.current);
+          tapTimerRef.current = null;
+        }
+        info.time = 0;
+        if (rippleTimerRef.current) clearTimeout(rippleTimerRef.current);
+        setRipple({ id: now, x, y: e.nativeEvent.locationY, dir: leftSide ? -1 : 1 });
+        rippleTimerRef.current = setTimeout(() => {
+          rippleTimerRef.current = null;
+          setRipple(null);
+        }, RIPPLE_MS);
+        if (Platform.OS !== "web") {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        }
+        seekBy(leftSide ? -10 : 10);
+        return;
+      }
+
+      info.time = now;
+      info.x = x;
+      if (!tapTimerRef.current) {
+        tapTimerRef.current = setTimeout(() => {
+          tapTimerRef.current = null;
+          toggleControls();
+        }, DOUBLE_TAP_MS);
+      }
+    };
+
+    tapActions.terminate = () => {
+      gestureRef.current = null;
+    };
+
+    return () => {
+      tapActions.grant = null;
+      tapActions.move = null;
+      tapActions.release = null;
+      tapActions.terminate = null;
+    };
+  }, [seekBy, toggleControls]);
+
+  // Tap-or-drag scrubbing: press previews the target, release commits it.
+  useEffect(() => {
+    const fractionFrom = (e) =>
+      Math.max(0, Math.min(1, e.nativeEvent.locationX / Math.max(1, scrubWidthRef.current)));
+    const preview = (e) => {
+      const fraction = fractionFrom(e);
+      const total = latestRef.current.duration || 0;
+      setScrub({ fraction, time: fraction * total });
+    };
+    scrubActions.grant = preview;
+    scrubActions.move = preview;
+    scrubActions.release = (e) => {
+      const fraction = fractionFrom(e);
+      const total = latestRef.current.duration || 0;
+      setScrub(null);
+      if (total > 0) seekTo(fraction * total);
+    };
+    scrubActions.terminate = () => setScrub(null);
+    return () => {
+      scrubActions.grant = null;
+      scrubActions.move = null;
+      scrubActions.release = null;
+      scrubActions.terminate = null;
+    };
+  }, [seekTo]);
 
   const goBack = useCallback(() => {
     try {
       router.back();
     } catch (_e) {
       router.navigate("/home");
+    }
+  }, []);
+
+  // Full screen: native locks landscape (works even when the phone's
+  // auto-rotate is off); the browser uses the Fullscreen API.
+  const setFullscreenMode = useCallback(async (next) => {
+    if (Platform.OS === "web") {
+      try {
+        if (next) {
+          await document.documentElement.requestFullscreen?.();
+        } else if (document.fullscreenElement) {
+          await document.exitFullscreen?.();
+        }
+      } catch {
+        // requires a user gesture / may be blocked by the browser
+      }
+      if (mountedRef.current) setFullscreen(!!document.fullscreenElement);
+      return;
+    }
+    try {
+      if (next) {
+        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+      } else {
+        await ScreenOrientation.unlockAsync();
+      }
+      if (mountedRef.current) setFullscreen(next);
+    } catch (e) {
+      console.warn("[player] fullscreen toggle failed", e);
     }
   }, []);
 
@@ -727,6 +1018,8 @@ export default function Player() {
   const qualityPill =
     quality.auto || quality.currentHeight == null ? "Auto" : qualityLabel(quality.currentHeight);
   const watchedFraction = duration > 0 ? Math.min(1, position / duration) : 0;
+  const progressFraction = scrub ? scrub.fraction : watchedFraction;
+  const displayTime = scrub ? scrub.time : position;
   const activeCue = subCues.length > 0 ? cueAt(subCues, position) : null;
 
   return (
@@ -747,15 +1040,60 @@ export default function Player() {
         />
       ) : null}
 
-      {/* Tap layer: toggles controls while content plays (never during ads). */}
+      {/* Tap layer: tap = controls, double-tap = seek, swipe = volume/brightness. */}
       {!adBreak && phase === "playing" ? (
-        <TouchableOpacity
+        <View
           style={styles.tapLayer}
-          activeOpacity={1}
-          onPress={toggleControls}
+          onLayout={(e) => {
+            tapWidthRef.current = e.nativeEvent.layout.width || 1;
+            tapHeightRef.current = e.nativeEvent.layout.height || 1;
+          }}
+          {...tapResponder.panHandlers}
           accessibilityRole="button"
-          accessibilityLabel="Toggle player controls"
+          accessibilityLabel="Player gestures: tap for controls, double tap to seek, swipe up or down for volume and brightness"
         />
+      ) : null}
+
+      {/* Double-tap seek feedback */}
+      {ripple ? (
+        <Animated.View
+          key={ripple.id}
+          entering={ZoomIn.duration(240)}
+          exiting={FadeOut.duration(280)}
+          style={[styles.ripple, { left: ripple.x - 58, top: ripple.y - 58 }]}
+          pointerEvents="none"
+        >
+          <Ionicons name={ripple.dir < 0 ? "play-back" : "play-forward"} size={24} color="#fff" />
+          <Text style={styles.rippleText}>10</Text>
+        </Animated.View>
+      ) : null}
+
+      {/* Volume / brightness gesture HUD */}
+      {gestureHud ? (
+        <Animated.View
+          entering={FadeIn.duration(140)}
+          exiting={FadeOut.duration(220)}
+          style={[
+            styles.gestureHud,
+            gestureHud.type === "brightness" ? { left: 40 } : { right: 40 },
+          ]}
+          pointerEvents="none"
+        >
+          <Ionicons
+            name={
+              gestureHud.type === "brightness"
+                ? "sunny"
+                : gestureHud.value <= 0.001
+                  ? "volume-mute"
+                  : gestureHud.value < 0.4
+                    ? "volume-low"
+                    : "volume-high"
+            }
+            size={22}
+            color={gestureHud.type === "brightness" ? GOLD : "#fff"}
+          />
+          <Text style={styles.gestureHudText}>{Math.round(gestureHud.value * 100)}%</Text>
+        </Animated.View>
       ) : null}
 
       {/* Controls */}
@@ -777,14 +1115,21 @@ export default function Player() {
             pointerEvents="none"
           />
 
-          <SafeAreaView edges={["top"]} style={styles.topBar} pointerEvents="box-none">
+          <Animated.View
+            entering={FadeInDown.duration(260)}
+            style={[
+              styles.topBar,
+              { paddingTop: insets.top + 8, paddingLeft: insets.left + 14, paddingRight: insets.right + 14 },
+            ]}
+            pointerEvents="box-none"
+          >
             <TouchableOpacity
               style={styles.glassBtn}
               onPress={goBack}
               accessibilityRole="button"
               accessibilityLabel="Leave player"
             >
-              <Ionicons name="chevron-back" size={22} color="#fff" />
+              <Ionicons name="chevron-back" size={23} color="#fff" />
             </TouchableOpacity>
             <View style={styles.topTitles}>
               <Text numberOfLines={1} style={styles.title}>
@@ -796,65 +1141,13 @@ export default function Player() {
                 </Text>
               ) : null}
             </View>
-            {qualitySelectable ? (
-              <TouchableOpacity
-                style={[styles.qualityPill, !quality.auto && styles.qualityPillActive]}
-                onPress={() => {
-                  showControls();
-                  setQualitySheet(true);
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={`Quality: ${qualityPill}`}
-              >
-                <Text
-                  style={[
-                    styles.qualityPillText,
-                    !quality.auto && styles.qualityPillTextActive,
-                  ]}
-                >
-                  {qualityPill}
-                </Text>
-                <Ionicons
-                  name="chevron-down"
-                  size={12}
-                  color={!quality.auto ? GOLD : "rgba(255,255,255,0.8)"}
-                />
-              </TouchableOpacity>
-            ) : qualityStatic ? (
-              <View style={styles.qualityPill}>
-                <Text style={styles.qualityPillText}>{qualityPill}</Text>
-              </View>
-            ) : null}
-            <TouchableOpacity
-              style={styles.glassBtn}
-              onPress={() => {
-                setSubsError(null);
-                setSubtitleSheet(true);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Subtitle settings"
-            >
-              <Ionicons
-                name={subLang ? "language" : "language-outline"}
-                size={20}
-                color={subLang ? GOLD : "#fff"}
-              />
-            </TouchableOpacity>
-          </SafeAreaView>
+          </Animated.View>
 
-          <View style={styles.centerRow} pointerEvents="box-none">
-            <View style={styles.seekGroup}>
-              <TouchableOpacity
-                style={styles.seekBtn}
-                onPress={() => seekBy(-10)}
-                accessibilityRole="button"
-                accessibilityLabel="Rewind 10 seconds"
-              >
-                <Ionicons name="play-back" size={21} color="#fff" />
-              </TouchableOpacity>
-              <Text style={styles.seekLabel}>10</Text>
-            </View>
-
+          <Animated.View
+            entering={FadeIn.duration(280).delay(70)}
+            style={styles.centerRow}
+            pointerEvents="box-none"
+          >
             <TouchableOpacity
               onPress={togglePlay}
               activeOpacity={0.9}
@@ -869,45 +1162,135 @@ export default function Player() {
               >
                 <Ionicons
                   name={playing ? "pause" : "play"}
-                  size={30}
+                  size={25}
                   color="#0a0a0a"
                   style={playing ? undefined : styles.playIconNudge}
                 />
               </LinearGradient>
             </TouchableOpacity>
+          </Animated.View>
 
-            <View style={styles.seekGroup}>
-              <TouchableOpacity
-                style={styles.seekBtn}
-                onPress={() => seekBy(10)}
-                accessibilityRole="button"
-                accessibilityLabel="Forward 10 seconds"
-              >
-                <Ionicons name="play-forward" size={21} color="#fff" />
-              </TouchableOpacity>
-              <Text style={styles.seekLabel}>10</Text>
-            </View>
-          </View>
-
-          <SafeAreaView edges={["bottom"]} style={styles.bottomBar} pointerEvents="box-none">
-            <Text style={styles.time}>{formatTime(position)}</Text>
-            <Pressable
-              style={styles.track}
-              onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width || 1)}
-              onPress={(e) => seekToFraction(e.nativeEvent.locationX / trackWidth)}
-              accessibilityRole="button"
-              accessibilityLabel={`Seek. ${formatTime(position)} of ${formatTime(duration)}`}
+          <SafeAreaView
+            edges={["bottom"]}
+            style={[styles.bottomWrap, { paddingLeft: 12 + insets.left, paddingRight: 12 + insets.right }]}
+            pointerEvents="box-none"
+          >
+            <Animated.View
+              entering={FadeInUp.duration(280).delay(40)}
+              style={styles.bottomDeck}
             >
-              <View style={styles.trackBg} />
-              <LinearGradient
-                colors={GOLD_GRADIENT}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={[styles.trackPlayed, { width: `${watchedFraction * 100}%` }]}
-              />
-              <View style={[styles.trackThumb, { left: `${watchedFraction * 100}%` }]} />
-            </Pressable>
-            <Text style={[styles.time, styles.timeRight]}>{formatTime(duration)}</Text>
+              <View style={styles.scrubRow}>
+                <Text style={styles.time}>{formatTime(displayTime)}</Text>
+                <View
+                  style={styles.track}
+                  onLayout={(e) => {
+                    scrubWidthRef.current = e.nativeEvent.layout.width || 1;
+                  }}
+                  {...scrubResponder.panHandlers}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Seek. ${formatTime(displayTime)} of ${formatTime(duration)}`}
+                >
+                  <View style={styles.trackBg} />
+                  <LinearGradient
+                    colors={GOLD_GRADIENT}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={[styles.trackPlayed, { width: `${progressFraction * 100}%` }]}
+                  />
+                  <View
+                    style={[
+                      styles.trackThumb,
+                      scrub && styles.trackThumbActive,
+                      { left: `${progressFraction * 100}%` },
+                    ]}
+                  />
+                  {scrub ? (
+                    <Animated.View
+                      entering={FadeIn.duration(120)}
+                      style={[styles.scrubBubble, { left: `${progressFraction * 100}%` }]}
+                    >
+                      <Text style={styles.scrubBubbleText}>{formatTime(scrub.time)}</Text>
+                    </Animated.View>
+                  ) : null}
+                </View>
+                <Text style={[styles.time, styles.timeRight]}>{formatTime(duration)}</Text>
+              </View>
+
+              <View style={styles.deckMetaRow}>
+                <TouchableOpacity
+                  style={[styles.deckPill, speed !== 1 && styles.deckPillGold]}
+                  onPress={() => {
+                    showControls();
+                    setSpeedSheet(true);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Playback speed ${speed}x`}
+                >
+                  <Ionicons
+                    name="speedometer-outline"
+                    size={15}
+                    color={speed !== 1 ? GOLD : "rgba(255,255,255,0.85)"}
+                  />
+                  <Text style={[styles.deckPillText, speed !== 1 && styles.deckPillTextGold]}>
+                    {speed}×
+                  </Text>
+                </TouchableOpacity>
+
+                <View style={styles.deckRight}>
+                  <TouchableOpacity
+                    style={[styles.iconPill, fullscreen && styles.deckPillGold]}
+                    onPress={() => setFullscreenMode(!fullscreen)}
+                    accessibilityRole="button"
+                    accessibilityLabel={fullscreen ? "Exit full screen" : "View full screen"}
+                  >
+                    <Ionicons
+                      name={fullscreen ? "contract" : "expand"}
+                      size={16}
+                      color={fullscreen ? GOLD : "rgba(255,255,255,0.9)"}
+                    />
+                  </TouchableOpacity>
+
+                  {qualitySelectable ? (
+                    <TouchableOpacity
+                      style={[styles.deckPill, !quality.auto && styles.deckPillGold]}
+                      onPress={() => {
+                        showControls();
+                        setQualitySheet(true);
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Quality: ${qualityPill}`}
+                    >
+                      <Text
+                        style={[styles.deckPillText, !quality.auto && styles.deckPillTextGold]}
+                      >
+                        {qualityPill}
+                      </Text>
+                      <Ionicons
+                        name="chevron-down"
+                        size={13}
+                        color={!quality.auto ? GOLD : "rgba(255,255,255,0.8)"}
+                      />
+                    </TouchableOpacity>
+                  ) : qualityStatic ? (
+                    <View style={styles.deckPill}>
+                      <Text style={styles.deckPillText}>{qualityPill}</Text>
+                    </View>
+                  ) : null}
+
+                  <TouchableOpacity
+                    style={[styles.ccBtn, subLang && styles.ccBtnActive]}
+                    onPress={() => {
+                      setSubsError(null);
+                      setSubtitleSheet(true);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Subtitle settings"
+                  >
+                    <Text style={[styles.ccText, subLang && styles.ccTextActive]}>CC</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Animated.View>
           </SafeAreaView>
         </Animated.View>
       ) : null}
@@ -968,6 +1351,13 @@ export default function Player() {
         currentHeight={quality.currentHeight}
         onSelect={handleQualitySelect}
         onClose={() => setQualitySheet(false)}
+      />
+
+      <SpeedSheet
+        visible={speedSheet}
+        speed={speed}
+        onSelect={handleSpeedSelect}
+        onClose={() => setSpeedSheet(false)}
       />
 
       {/* Finished */}
@@ -1039,114 +1429,200 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#000" },
   tapLayer: { ...StyleSheet.absoluteFill, zIndex: 1 },
   controls: { ...StyleSheet.absoluteFill, zIndex: 10, justifyContent: "space-between" },
-  topScrim: { position: "absolute", top: 0, left: 0, right: 0, height: 150 },
-  bottomScrim: { position: "absolute", bottom: 0, left: 0, right: 0, height: 180 },
+  topScrim: { position: "absolute", top: 0, left: 0, right: 0, height: 160 },
+  bottomScrim: { position: "absolute", bottom: 0, left: 0, right: 0, height: 240 },
   topBar: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 14,
     paddingTop: 10,
-    gap: 10,
+    gap: 12,
   },
   glassBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.10)",
+    width: 44,
+    height: 44,
+    borderRadius: 16,
+    backgroundColor: "rgba(20,20,26,0.55)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.16)",
     alignItems: "center",
     justifyContent: "center",
   },
   topTitles: { flex: 1, gap: 1 },
-  title: { color: "#fff", fontSize: 15.5, fontWeight: "800" },
-  topMeta: { color: "rgba(255,255,255,0.58)", fontSize: 11, fontWeight: "700" },
-  qualityPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    height: 34,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-  },
-  qualityPillActive: {
-    backgroundColor: "rgba(232,184,74,0.16)",
-    borderColor: "rgba(232,184,74,0.55)",
-  },
-  qualityPillText: { color: "rgba(255,255,255,0.92)", fontSize: 12.5, fontWeight: "800" },
-  qualityPillTextActive: { color: GOLD },
+  title: { color: "#fff", fontSize: 16, fontWeight: "800" },
+  topMeta: { color: "rgba(255,255,255,0.55)", fontSize: 11, fontWeight: "700" },
   centerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 36,
   },
-  seekGroup: { alignItems: "center", gap: 5 },
-  seekBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "rgba(255,255,255,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  seekLabel: { color: "rgba(255,255,255,0.72)", fontSize: 10.5, fontWeight: "800" },
   playBtn: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.28)",
     shadowColor: GOLD,
     shadowOpacity: 0.5,
-    shadowRadius: 16,
+    shadowRadius: 14,
     shadowOffset: { width: 0, height: 6 },
     elevation: 12,
   },
   playIconNudge: { marginLeft: 3 },
-  bottomBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
+  bottomWrap: { paddingHorizontal: 12, paddingBottom: 6 },
+  bottomDeck: {
+    borderRadius: 24,
+    backgroundColor: "rgba(14,14,18,0.82)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.09)",
     paddingHorizontal: 16,
-    paddingBottom: 12,
+    paddingTop: 12,
+    paddingBottom: 14,
+    gap: 8,
+    shadowColor: "#000",
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
   },
-  time: { color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: "700", minWidth: 46 },
+  scrubRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  time: { color: "rgba(255,255,255,0.85)", fontSize: 11.5, fontWeight: "700", minWidth: 46 },
   timeRight: { textAlign: "right" },
-  track: { flex: 1, height: 30, justifyContent: "center" },
+  track: { flex: 1, height: 36, justifyContent: "center" },
   trackBg: {
     position: "absolute",
     left: 0,
     right: 0,
-    height: 4.5,
-    borderRadius: 2.5,
-    backgroundColor: "rgba(255,255,255,0.28)",
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(255,255,255,0.22)",
   },
   trackPlayed: {
     position: "absolute",
     left: 0,
-    height: 4.5,
-    borderRadius: 2.5,
+    height: 6,
+    borderRadius: 3,
   },
   trackThumb: {
     position: "absolute",
-    width: 15,
-    height: 15,
+    width: 16,
+    height: 16,
     borderRadius: 8,
     backgroundColor: "#fff",
     borderWidth: 3,
     borderColor: GOLD,
-    marginLeft: -7.5,
+    marginLeft: -8,
     shadowColor: "#000",
-    shadowOpacity: 0.35,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 4,
+    shadowOpacity: 0.4,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
+  },
+  trackThumbActive: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    marginLeft: -11,
+  },
+  scrubBubble: {
+    position: "absolute",
+    bottom: 30,
+    width: 74,
+    marginLeft: -37,
+    alignItems: "center",
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: "rgba(20,20,26,0.96)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  scrubBubbleText: { color: "#fff", fontSize: 12.5, fontWeight: "800" },
+  deckMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 2,
+  },
+  deckRight: { flexDirection: "row", alignItems: "center", gap: 8 },
+  deckPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+  deckPillGold: {
+    backgroundColor: "rgba(232,184,74,0.16)",
+    borderColor: "rgba(232,184,74,0.55)",
+  },
+  deckPillText: { color: "rgba(255,255,255,0.9)", fontSize: 12.5, fontWeight: "800" },
+  deckPillTextGold: { color: GOLD },
+  ccBtn: {
+    height: 34,
+    minWidth: 44,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ccBtnActive: {
+    backgroundColor: "rgba(232,184,74,0.16)",
+    borderColor: "rgba(232,184,74,0.55)",
+  },
+  ccText: { color: "rgba(255,255,255,0.9)", fontSize: 12, fontWeight: "800" },
+  ccTextActive: { color: GOLD },
+  ripple: {
+    position: "absolute",
+    width: 116,
+    height: 116,
+    borderRadius: 58,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.26)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 2,
+    zIndex: 9,
+  },
+  rippleText: { color: GOLD, fontSize: 14, fontWeight: "800" },
+  gestureHud: {
+    position: "absolute",
+    top: "36%",
+    width: 84,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 16,
+    borderRadius: 20,
+    backgroundColor: "rgba(14,14,18,0.82)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    zIndex: 9,
+    shadowColor: "#000",
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  gestureHudText: { color: "#fff", fontSize: 13.5, fontWeight: "800" },
+  iconPill: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   cardBackdrop: {
     ...StyleSheet.absoluteFill,
@@ -1185,7 +1661,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 20,
     right: 20,
-    bottom: 96,
+    bottom: 148,
     zIndex: 8,
     alignItems: "center",
   },

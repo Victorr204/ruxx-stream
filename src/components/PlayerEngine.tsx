@@ -22,6 +22,10 @@ export type PlayerHandle = {
   seek: (seconds: number) => void;
   /** Pick a resolution; null returns to Auto (engine chooses freely). */
   setQuality: (height: number | null) => void;
+  /** Playback speed (1 = normal). Survives source swaps. */
+  setRate: (rate: number) => void;
+  /** In-app playback volume (0–1). Survives source swaps. */
+  setVolume: (volume: number) => void;
   getCurrentTime: () => number;
   getDuration: () => number;
   isPlaying: () => boolean;
@@ -116,6 +120,18 @@ function NativeEngine({
   const activeUrlRef = useRef(url);
   const restoreRef = useRef<{ at: number; play: boolean } | null>(null);
   const revertingRef = useRef(false);
+  const rateRef = useRef(1);
+  const volumeRef = useRef(1);
+
+  // Re-apply speed + volume whenever a (new) source reaches readyToPlay.
+  const applyPrefs = () => {
+    try {
+      playerRef.current.playbackRate = rateRef.current;
+      playerRef.current.volume = volumeRef.current;
+    } catch {
+      // player not ready; retried on the next status change
+    }
+  };
 
   const emitQuality = useCallback((patch: Partial<QualityState>) => {
     qualityRef.current = { ...qualityRef.current, ...patch };
@@ -203,6 +219,7 @@ function NativeEngine({
       player.addListener("statusChange", (payload: { status?: string; error?: { message?: string } }) => {
         if (payload?.status === "readyToPlay") {
           revertingRef.current = false;
+          applyPrefs();
           applySeek();
           syncLevels();
         }
@@ -295,6 +312,14 @@ function NativeEngine({
         emitQuality({ auto: false, currentHeight: target.height });
         if (target.url && activeUrlRef.current !== target.url) switchSource(target.url);
       },
+      setRate: (rate: number) => {
+        rateRef.current = rate;
+        applyPrefs();
+      },
+      setVolume: (volume: number) => {
+        volumeRef.current = Math.max(0, Math.min(1, volume));
+        applyPrefs();
+      },
       getCurrentTime: () => (Number.isFinite(player.currentTime) ? player.currentTime : 0),
       getDuration: () =>
         Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 0,
@@ -350,6 +375,8 @@ function WebEngine({
   const masterUrlRef = useRef(url);
   const activeUrlRef = useRef(url);
   const restoreRef = useRef<{ at: number; play: boolean } | null>(null);
+  const rateRef = useRef(1);
+  const volumeRef = useRef(1);
 
   const emitQuality = useCallback((patch: Partial<QualityState>) => {
     qualityRef.current = { ...qualityRef.current, ...patch };
@@ -394,6 +421,12 @@ function WebEngine({
 
     const handleLoadedMetadata = () => {
       applyPendingSeek();
+      try {
+        video.playbackRate = rateRef.current;
+        video.volume = volumeRef.current;
+      } catch {
+        // metadata not ready; retried on later events
+      }
       if (qualityRef.current.levels.length > 0 || video.videoHeight <= 0) return;
       // Single-file source: one intrinsic level (the button stays hidden).
       emitQuality({
@@ -544,6 +577,22 @@ function WebEngine({
         manualHeightRef.current = target.height;
         emitQuality({ auto: false, currentHeight: target.height });
         if (activeUrlRef.current !== target.url) replaceWebSource(target.url);
+      },
+      setRate: (rate: number) => {
+        rateRef.current = rate;
+        try {
+          video.playbackRate = rate;
+        } catch (e) {
+          console.warn("[player] setRate failed", e);
+        }
+      },
+      setVolume: (volume: number) => {
+        volumeRef.current = Math.max(0, Math.min(1, volume));
+        try {
+          video.volume = volumeRef.current;
+        } catch (e) {
+          console.warn("[player] setVolume failed", e);
+        }
       },
       getCurrentTime: () => video.currentTime || 0,
       getDuration: () => (Number.isFinite(video.duration) ? video.duration : 0),
