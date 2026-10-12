@@ -167,13 +167,24 @@ jobs:
       - name: Create the release and upload the installers
         env:
           GH_TOKEN: ${{ github.token }}
-        # create is a no-op failure on re-runs when the release already exists;
-        # the upload below then replaces the assets (--clobber).
+          # This job has no checkout step, so gh cannot discover the repo
+          # from a git remote — tell it explicitly.
+          GH_REPO: ${{ github.repository }}
+        # Surface gh's own error text as an annotation so the failure is
+        # readable without opening the raw log.
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --verify-tag \
-            --title "Ruxx Stream $GITHUB_REF_NAME" \
-            --generate-notes \
-            out/* || true
-          gh release upload "$GITHUB_REF_NAME" out/* --clobber
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            if ! err=$(gh release create "$GITHUB_REF_NAME" \
+                --verify-tag \
+                --title "Ruxx Stream $GITHUB_REF_NAME" \
+                --generate-notes \
+                out/* 2>&1); then
+              echo "::error::gh release create failed: $err"
+              exit 1
+            fi
+          fi
+          if ! err=$(gh release upload "$GITHUB_REF_NAME" out/* --clobber 2>&1); then
+            echo "::error::gh release upload failed: $err"
+            exit 1
+          fi
 
