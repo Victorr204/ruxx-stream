@@ -57,6 +57,9 @@ Deno.serve(async (req) => {
       movieId = null;
     }
     if (!movieId) return json({ error: "movie_id is required" }, 400);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(movieId)) {
+      return json({ error: "movie_id must be a uuid" }, 400);
+    }
     if (!language || !LANGUAGE_TAG.test(language)) {
       return json({ error: "language must be a language tag" }, 400);
     }
@@ -72,6 +75,23 @@ Deno.serve(async (req) => {
     });
     const { data: userData, error: userError } = await caller.auth.getUser();
     if (userError || !userData?.user) return json({ error: "Invalid session" }, 401);
+    const userId = userData.user.id;
+
+    // Saving parses + stores up to 400k chars; cap it so one account can't
+    // flood the shared subtitle table.
+    const { data: allowed } = await caller.rpc("hit_rate_limit", {
+      p_key: `transcript:${userId}`,
+      p_max: 10,
+      p_window_seconds: 3600,
+    });
+    if (allowed === false) return json({ error: "Too many saves — try again later" }, 429);
+
+    const { data: callerProfile } = await caller
+      .from("profiles")
+      .select("role")
+      .eq("id", userId)
+      .maybeSingle();
+    const isAdmin = (callerProfile as { role?: string } | null)?.role === "admin";
 
     // Serialize once and prove the parser reads it back — a cue shape the
     // player can't render must never be stored.
@@ -98,22 +118,34 @@ Deno.serve(async (req) => {
 
     const { data: existing, error: existingError } = await db
       .from("movie_subtitles")
-      .select("id, origin")
+      .select("id, origin, created_by")
       .eq("movie_id", movieId)
       .eq("language", language)
       .maybeSingle();
     if (existingError) return json({ error: existingError.message }, 500);
 
     if (existing) {
-      if ((existing as { origin: string }).origin !== "generated") {
+      const row = existing as { id: string; origin: string; created_by: string | null };
+      if (row.origin !== "generated") {
         return json({ error: "An uploaded subtitle file already exists for this language" }, 409);
       }
-      // Filtered on origin so a racing admin upload can't be clobbered.
-      const { error: updateError } = await db
+      // Generated rows belong to whoever produced them: a second account
+      // must not be able to replace another viewer's transcript (admins
+      // may — they moderate the shared table).
+      if (!isAdmin && row.created_by && row.created_by !== userId) {
+        return json({ error: "Another account generated subtitles for this language" }, 409);
+      }
+      // Filtered on origin so a racing admin upload can't be clobbered, and
+      // on ownership so a racing second generator can't either.
+      let updateQuery = db
         .from("movie_subtitles")
         .update({ source, label, detected_language: detectedLanguage })
-        .eq("id", (existing as { id: string }).id)
+        .eq("id", row.id)
         .eq("origin", "generated");
+      if (!isAdmin) {
+        updateQuery = updateQuery.or(`created_by.is.null,created_by.eq.${userId}`);
+      }
+      const { error: updateError } = await updateQuery;
       if (updateError) return json({ error: updateError.message }, 500);
       return json({ ok: true, movie_id: movieId, language, cues: (cues as Cue[]).length });
     }
@@ -125,6 +157,7 @@ Deno.serve(async (req) => {
       source,
       origin: "generated",
       detected_language: detectedLanguage,
+      created_by: userId,
     });
     if (insertError) {
       // Unique violation → an upload landed between our check and insert.

@@ -31,9 +31,24 @@ type Props = {
   active: string | null;
   busy: boolean;
   error: string | null;
+  scale?: number;
+  offset?: number;
   onSelect: (code: string | null) => void;
+  onScaleChange?: (scale: number) => void;
+  onOffsetChange?: (offset: number) => void;
   onClose: () => void;
 };
+
+const SCALE_OPTIONS = [
+  { label: "S", value: 0.85 },
+  { label: "M", value: 1 },
+  { label: "L", value: 1.25 },
+  { label: "XL", value: 1.6 },
+];
+
+const OFFSET_STEP = 0.2;
+const OFFSET_MIN = -3;
+const OFFSET_MAX = 3;
 
 type Detection = {
   forMovie: string;
@@ -56,7 +71,11 @@ export default function SubtitleSheet({
   active,
   busy,
   error,
+  scale = 1,
+  offset = 0,
   onSelect,
+  onScaleChange,
+  onOffsetChange,
   onClose,
 }: Props) {
   const { theme } = useTheme();
@@ -393,6 +412,79 @@ export default function SubtitleSheet({
           ) : (
             <ScrollView style={styles.rows} contentContainerStyle={styles.rowsContent}>
               {renderDetection()}
+
+              {onScaleChange && onOffsetChange ? (
+                <>
+                  {renderSection("options-outline", "Appearance", "Size and timing on this device")}
+                  <View style={styles.appearanceRow}>
+                    <View style={styles.scaleChips}>
+                      {SCALE_OPTIONS.map((option) => {
+                        const selected = Math.abs(scale - option.value) < 0.01;
+                        return (
+                          <TouchableOpacity
+                            key={option.label}
+                            style={[
+                              styles.scaleChip,
+                              {
+                                backgroundColor: selected ? GOLD : "rgba(255,255,255,0.06)",
+                                borderColor: selected ? GOLD : theme.cardBorder,
+                              },
+                            ]}
+                            onPress={() => onScaleChange(option.value)}
+                            activeOpacity={0.8}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Subtitle size ${option.label}`}
+                          >
+                            <Text
+                              style={[
+                                styles.scaleChipText,
+                                { color: selected ? "#14141a" : theme.subtitle, fontSize: 10 + option.value * 4 },
+                              ]}
+                            >
+                              {option.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                    <View style={styles.offsetBox}>
+                      <TouchableOpacity
+                        style={[
+                          styles.offsetBtn,
+                          { borderColor: theme.cardBorder, opacity: offset <= OFFSET_MIN + 0.01 ? 0.35 : 1 },
+                        ]}
+                        disabled={offset <= OFFSET_MIN + 0.01}
+                        onPress={() =>
+                          onOffsetChange(Math.max(OFFSET_MIN, Math.round((offset - OFFSET_STEP) * 10) / 10))
+                        }
+                        accessibilityRole="button"
+                        accessibilityLabel="Subtitles later"
+                      >
+                        <Ionicons name="remove" size={15} color={theme.text} />
+                      </TouchableOpacity>
+                      <Text style={[styles.offsetValue, { color: theme.text }]}>
+                        {offset > 0 ? "+" : ""}
+                        {offset.toFixed(1)}s
+                      </Text>
+                      <TouchableOpacity
+                        style={[
+                          styles.offsetBtn,
+                          { borderColor: theme.cardBorder, opacity: offset >= OFFSET_MAX - 0.01 ? 0.35 : 1 },
+                        ]}
+                        disabled={offset >= OFFSET_MAX - 0.01}
+                        onPress={() =>
+                          onOffsetChange(Math.min(OFFSET_MAX, Math.round((offset + OFFSET_STEP) * 10) / 10))
+                        }
+                        accessibilityRole="button"
+                        accessibilityLabel="Subtitles earlier"
+                      >
+                        <Ionicons name="add" size={15} color={theme.text} />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </>
+              ) : null}
+
               {renderScan()}
 
               {renderSection(
@@ -514,6 +606,35 @@ const styles = StyleSheet.create({
   },
   detectValue: { fontSize: 15, fontWeight: "800" },
   detectHint: { fontSize: 11, fontWeight: "600" },
+  appearanceRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  scaleChips: { flex: 1, flexDirection: "row", gap: 7 },
+  scaleChip: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 11,
+    paddingVertical: 10,
+  },
+  scaleChipText: { fontWeight: "900" },
+  offsetBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    borderWidth: 1,
+    borderRadius: 11,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  offsetBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offsetValue: { fontSize: 12.5, fontWeight: "800", minWidth: 44, textAlign: "center" },
   sectionBlock: { gap: 3, marginTop: 4 },
   sectionHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
   sectionLabel: {

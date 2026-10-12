@@ -71,7 +71,6 @@ function draftFrom(movie: AdminMovie | null): Draft {
     poster_url: movie?.poster_url ?? "",
     backdrop_url: movie?.backdrop_url ?? "",
     trailer_url: movie?.trailer_url ?? "",
-    stream_url: movie?.stream_url ?? "",
     r2_key_free: movie?.r2_key_free ?? "",
     is_active: movie?.is_active ?? true,
     is_featured: movie?.is_featured ?? false,
@@ -251,9 +250,8 @@ export default function MovieEditor({ movie, genres, onClose, onSaved, onError }
         },
       });
       if (picked === "cancelled") return;
-      // The uploaded object becomes the playable source; drop any stale
-      // external URL so the status line stays truthful.
-      set({ r2_key_free: picked.key, stream_url: "" });
+      // The uploaded object becomes the playable source.
+      set({ r2_key_free: picked.key });
       setVideoSummary({
         originalBytes: picked.originalBytes,
         outputBytes: picked.outputBytes,
@@ -291,7 +289,9 @@ export default function MovieEditor({ movie, genres, onClose, onSaved, onError }
       onError("Title is required.");
       return;
     }
-    if (!(draft.stream_url ?? "").trim() && !(draft.r2_key_free ?? "").trim()) {
+    // New titles must upload a file (legacy rows may still live on a raw
+    // URL, which only the backend may read — the editor never touches it).
+    if (!movie && !(draft.r2_key_free ?? "").trim()) {
       onError("Upload the movie file — the video is stored and linked automatically.");
       return;
     }
@@ -318,7 +318,6 @@ export default function MovieEditor({ movie, genres, onClose, onSaved, onError }
         poster_url: textOrNull(draft.poster_url ?? ""),
         backdrop_url: textOrNull(draft.backdrop_url ?? ""),
         trailer_url: textOrNull(draft.trailer_url ?? ""),
-        stream_url: textOrNull(draft.stream_url ?? ""),
         r2_key_free: textOrNull(draft.r2_key_free ?? ""),
         premium_r2_key: textOrNull(draft.premium_r2_key ?? ""),
         premium_stream_url: textOrNull(draft.premium_stream_url ?? ""),
@@ -334,8 +333,8 @@ export default function MovieEditor({ movie, genres, onClose, onSaved, onError }
   const storedKey = (draft.r2_key_free ?? "").trim();
   const baseHint = storedKey
     ? `Stored in Backblaze B2 — ${storedKey}`
-    : (draft.stream_url ?? "").trim()
-      ? "Legacy external source — choose a file to replace it."
+    : movie
+      ? "Existing source kept — choose a file to replace it."
       : "Nothing uploaded yet — choose the movie file; it saves to Backblaze B2 automatically.";
   const webNote =
     Platform.OS === "web"
@@ -583,6 +582,47 @@ export default function MovieEditor({ movie, genres, onClose, onSaved, onError }
                     </Text>
                   )}
                 </TouchableOpacity>
+              </View>
+            </Field>
+
+            <Field
+              label="Trailer URL"
+              hint="Direct .mp4/.m3u8 link — a Trailer button appears on the movie page when set."
+            >
+              <TextInput
+                style={inputStyle}
+                value={draft.trailer_url ?? ""}
+                onChangeText={(value) => set({ trailer_url: value })}
+                placeholder="https://…/trailer.mp4"
+                placeholderTextColor={theme.placeholder}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </Field>
+
+            <Field
+              label="Premium source"
+              hint="Optional higher-bitrate file for premium members — stored in Backblaze B2."
+            >
+              <View style={{ gap: 10 }}>
+                <TextInput
+                  style={inputStyle}
+                  value={draft.premium_r2_key ?? ""}
+                  onChangeText={(value) => set({ premium_r2_key: value })}
+                  placeholder="B2 key (e.g. movies/premium/foo.mp4)"
+                  placeholderTextColor={theme.placeholder}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TextInput
+                  style={inputStyle}
+                  value={draft.premium_stream_url ?? ""}
+                  onChangeText={(value) => set({ premium_stream_url: value })}
+                  placeholder="Or a signed stream URL (backend-only fallback)"
+                  placeholderTextColor={theme.placeholder}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
               </View>
             </Field>
 

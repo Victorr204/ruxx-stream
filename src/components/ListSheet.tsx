@@ -40,7 +40,9 @@ export default function ListSheet({ visible, movieId, onClose, onMembershipChang
   const isPremium = useAuthStore((s) => s.profile?.is_premium ?? false);
   const limit = listLimitFor(isPremium);
 
-  const [loading, setLoading] = useState(false);
+  // Which movie's lists are already on screen: the spinner covers the first
+  // open (and a movie switch); repeat opens refetch without flashing it.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [lists, setLists] = useState<UserList[]>([]);
   const [inListIds, setInListIds] = useState<string[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -64,13 +66,15 @@ export default function ListSheet({ visible, movieId, onClose, onMembershipChang
         setError(e instanceof Error ? e.message : "Something went wrong");
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setLoadedFor(movieId);
       });
 
     return () => {
       cancelled = true;
     };
   }, [visible, movieId]);
+
+  const loading = visible && loadedFor !== movieId;
 
   const emitMembership = (next: string[]) => {
     setInListIds(next);

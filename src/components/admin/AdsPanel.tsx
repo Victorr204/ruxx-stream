@@ -24,7 +24,7 @@ const DEFAULT_SETTINGS: AdminAdSettings = {
   pre_roll_enabled: true,
   mid_roll_enabled: true,
   banner_enabled: true,
-  mid_roll_interval_seconds: 300,
+  mid_roll_interval_seconds: 600,
   fail_open: true,
 };
 
@@ -32,7 +32,6 @@ const PLACEMENT_LABELS: Record<string, string> = {
   pre_roll: "Pre-roll",
   mid_roll: "Mid-roll",
   banner: "Banner",
-  rewarded: "Rewarded",
 };
 
 const UNIT_FIELDS = ["android_unit_id", "ios_unit_id", "web_unit_id", "tv_unit_id"] as const;
@@ -49,8 +48,8 @@ export default function AdsPanel() {
   const [savedSettings, setSavedSettings] = useState<AdminAdSettings>(DEFAULT_SETTINGS);
   const [units, setUnits] = useState<AdminAdUnit[]>([]);
   const [savedUnits, setSavedUnits] = useState<AdminAdUnit[]>([]);
-  const [intervalText, setIntervalText] = useState("300");
-  const [savedIntervalText, setSavedIntervalText] = useState("300");
+  const [intervalText, setIntervalText] = useState("600");
+  const [savedIntervalText, setSavedIntervalText] = useState("600");
   const [loading, setLoading] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingPlacement, setSavingPlacement] = useState<string | null>(null);
@@ -72,8 +71,9 @@ export default function AdsPanel() {
         setSavedSettings(next);
         setIntervalText(String(next.mid_roll_interval_seconds));
         setSavedIntervalText(String(next.mid_roll_interval_seconds));
-        setUnits(unitRows);
-        setSavedUnits(unitRows);
+        const visible = unitRows.filter((row) => row.placement === "pre_roll" || row.placement === "mid_roll" || row.placement === "banner");
+        setUnits(visible);
+        setSavedUnits(visible);
         setLoading(false);
       })
       .catch((e: unknown) => {
@@ -153,7 +153,7 @@ export default function AdsPanel() {
         {(
           [
             ["pre_roll_enabled", "Pre-roll", "Before playback starts"],
-            ["mid_roll_enabled", "Mid-roll", "Cue points during playback"],
+            ["mid_roll_enabled", "Mid-roll", "Every interval during playback"],
             ["banner_enabled", "Banner", "Browse surfaces (mobile)"],
             ["fail_open", "Fail open", "Ad failure resumes content immediately"],
           ] as [keyof AdminAdSettings, string, string][]
@@ -180,7 +180,7 @@ export default function AdsPanel() {
           <View style={{ flex: 1 }}>
             <Text style={[styles.settingLabel, { color: theme.text }]}>Mid-roll interval</Text>
             <Text style={[styles.settingHint, { color: theme.placeholder }]}>
-              Seconds between cues (min 30)
+              Seconds between ads on a title, from the last ad shown (min 30)
             </Text>
           </View>
           <TextInput
@@ -188,7 +188,7 @@ export default function AdsPanel() {
             value={intervalText}
             onChangeText={setIntervalText}
             keyboardType="number-pad"
-            placeholder="300"
+            placeholder="600"
             placeholderTextColor={theme.placeholder}
           />
         </View>

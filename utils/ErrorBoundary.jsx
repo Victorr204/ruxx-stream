@@ -1,5 +1,19 @@
 import React from "react";
 import { View, Text, TouchableOpacity, StyleSheet, useColorScheme } from "react-native";
+import { getSupabase } from "../src/lib/supabase";
+
+function reportCrash(error, componentStack) {
+  try {
+    const message = String(error?.message || "Something went wrong").slice(0, 4000);
+    const stack = String(error?.stack || componentStack || "").slice(0, 8000);
+    getSupabase()
+      .from("client_error_logs")
+      .insert({ area: "ErrorBoundary", message, stack })
+      .then(() => undefined, () => undefined);
+  } catch {
+    // Reporting must never throw inside the crash handler.
+  }
+}
 
 function ErrorFallback({ message, onRetry }) {
   const scheme = useColorScheme();
@@ -35,10 +49,11 @@ export default class ErrorBoundary extends React.Component {
     return { hasError: true, message: error?.message || "Something went wrong" };
   }
 
-  componentDidCatch(error) {
+  componentDidCatch(error, info) {
     if (__DEV__) {
       console.error("ErrorBoundary:", error);
     }
+    reportCrash(error, info?.componentStack);
   }
 
   handleReload = () => {

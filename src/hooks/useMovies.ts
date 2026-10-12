@@ -26,17 +26,19 @@ type FeedState = {
   run: number;
   data: HomeFeed | null;
   error: string | null;
+  fetchedAt: number | null;
 };
 
 export type HomeFeedState = {
   data: HomeFeed | null;
   loading: boolean;
   error: string | null;
+  fetchedAt: number | null;
   reload: () => void;
 };
 
 export function useHomeFeed(): HomeFeedState {
-  const [state, setState] = useState<FeedState>({ run: -1, data: null, error: null });
+  const [state, setState] = useState<FeedState>({ run: -1, data: null, error: null, fetchedAt: null });
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -44,10 +46,10 @@ export function useHomeFeed(): HomeFeedState {
 
     fetchHomeFeed()
       .then((data) => {
-        if (!cancelled) setState({ run: nonce, data, error: null });
+        if (!cancelled) setState({ run: nonce, data, error: null, fetchedAt: Date.now() });
       })
       .catch((e: unknown) => {
-        if (!cancelled) setState({ run: nonce, data: null, error: toMessage(e) });
+        if (!cancelled) setState({ run: nonce, data: null, error: toMessage(e), fetchedAt: Date.now() });
       });
 
     return () => {
@@ -61,6 +63,7 @@ export function useHomeFeed(): HomeFeedState {
     data: state.data,
     loading: state.run !== nonce,
     error: state.error,
+    fetchedAt: state.fetchedAt,
     reload,
   };
 }
@@ -77,33 +80,41 @@ export type SearchStateResult = {
   error: string | null;
 };
 
+const SEARCH_DEBOUNCE_MS = 300;
+
 export function useSearch(rawQuery: string): SearchStateResult {
   const query = rawQuery.trim();
+  const [debounced, setDebounced] = useState(query);
   const [state, setState] = useState<SearchState>({ query: "", data: [], error: null });
 
   useEffect(() => {
-    if (!query) return undefined;
+    const timer = setTimeout(() => setDebounced(query), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
+    if (!debounced) return undefined;
     let cancelled = false;
 
-    searchMovies(query)
+    searchMovies(debounced)
       .then((data) => {
-        if (!cancelled) setState({ query, data, error: null });
+        if (!cancelled) setState({ query: debounced, data, error: null });
       })
       .catch((e: unknown) => {
-        if (!cancelled) setState({ query, data: [], error: toMessage(e) });
+        if (!cancelled) setState({ query: debounced, data: [], error: toMessage(e) });
       });
 
     return () => {
       cancelled = true;
     };
-  }, [query]);
+  }, [debounced]);
 
-  const hasQuery = query.length > 0;
-  const settled = state.query === query;
+  const hasQuery = debounced.length > 0;
+  const settled = state.query === debounced;
 
   return {
     data: hasQuery && settled && !state.error ? state.data : [],
-    loading: hasQuery && !settled,
+    loading: query.length > 0 && (!settled || query !== debounced),
     error: hasQuery && settled ? state.error : null,
   };
 }

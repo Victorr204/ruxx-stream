@@ -420,3 +420,8 @@ enabled = true
 # this one. (Deploy: supabase functions deploy paystack-webhook --no-verify-jwt)
 [functions.paystack-webhook]
 verify_jwt = false
+
+# whisper-model signs anonymous GETs for the scanner's model files (its callers
+# are the bundled app, which has no Supabase session on this fetch).
+[functions.whisper-model]
+verify_jwt = false

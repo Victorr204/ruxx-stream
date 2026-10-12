@@ -1,67 +1,41 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Result of the cold-start boot check (see app/_layout.jsx). Resolved once
+// Result of the cold-start boot check (see app/_layout.tsx). Resolved once
 // while the splash is up so the first screen can be chosen without another
-// network round trip, and so verify-pin can fire the biometric prompt instantly.
-// Kept in memory (fast path) and mirrored to AsyncStorage so a slow boot can
-// fall back to the flags from the previous launch.
+// network round trip. Kept in memory (fast path) and mirrored to AsyncStorage
+// so a slow boot can fall back to the target from the previous launch.
 let boot = null;
 
-const KEY_USER_ID = 'boot:userId';
-const KEY_HAS_PIN = 'boot:hasPin';
-const KEY_USE_BIOMETRIC = 'boot:useBiometric';
-const FLAG_KEYS = [KEY_USER_ID, KEY_HAS_PIN, KEY_USE_BIOMETRIC];
+const KEY_TARGET = 'boot:targetUrl';
 
-const parseFlag = (value) => (value === '1' ? true : value === '0' ? false : null);
-
-// Merge a patch into the boot cache and persist the flag subset.
+// Merge a patch into the boot cache and persist the target subset.
 export const setBootSession = (patch) => {
   boot = { ...(boot || {}), ...patch };
   try {
-    const pairs = [];
-    if (Object.prototype.hasOwnProperty.call(patch, 'userId')) {
-      pairs.push([KEY_USER_ID, patch.userId || '']);
+    if (Object.prototype.hasOwnProperty.call(patch, 'targetUrl')) {
+      AsyncStorage.setItem(KEY_TARGET, patch.targetUrl || '').catch(() => {});
     }
-    if (Object.prototype.hasOwnProperty.call(patch, 'hasPin')) {
-      pairs.push([KEY_HAS_PIN, patch.hasPin ? '1' : '0']);
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, 'useBiometric')) {
-      pairs.push([KEY_USE_BIOMETRIC, patch.useBiometric ? '1' : '0']);
-    }
-    if (pairs.length) AsyncStorage.multiSet(pairs).catch(() => {});
   } catch (_e) {}
   return boot;
 };
 
 export const getBootSession = () => boot;
 
-export const clearBootSession = () => {
-  boot = null;
-  AsyncStorage.multiRemove(FLAG_KEYS).catch(() => {});
-};
-
-// Flags from the last successful boot / last PIN change. Used to pick the
-// first screen and to trigger biometrics without waiting on the network.
-export const readCachedFlags = async () => {
+// Slow-boot fallback: recover the target persisted by the previous launch when
+// the in-memory copy is missing (cold start). Best-effort — a failure here just
+// means the caller decides the first screen on its own.
+export const readPersistedBootTarget = async () => {
   try {
-    const entries = await AsyncStorage.multiGet(FLAG_KEYS);
-    const map = {};
-    for (const entry of entries) map[entry[0]] = entry[1];
-    return {
-      userId: map[KEY_USER_ID] || null,
-      hasPin: parseFlag(map[KEY_HAS_PIN]),
-      useBiometric: parseFlag(map[KEY_USE_BIOMETRIC]),
-    };
+    const target = await AsyncStorage.getItem(KEY_TARGET);
+    return target || '';
   } catch (_e) {
-    return { userId: null, hasPin: null, useBiometric: null };
+    return '';
   }
 };
 
-// User doc for a given user if the boot gate already fetched it, else null.
-export const getCachedUserDoc = (userId) => {
-  if (!boot || !userId) return null;
-  if (boot.userId && boot.userId !== userId) return null;
-  const doc = boot.userDoc || null;
-  if (doc && doc.userId && doc.userId !== userId) return null;
-  return doc;
+// Called when the session goes away (sign-out or expiry) so a stale target
+// from a signed-in boot can never reroute a signed-out app.
+export const clearBootSession = () => {
+  boot = null;
+  AsyncStorage.removeItem(KEY_TARGET).catch(() => {});
 };

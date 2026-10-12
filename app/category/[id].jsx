@@ -6,7 +6,7 @@ import {
   FlatList,
   ActivityIndicator,
   TouchableOpacity,
-  Dimensions,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
@@ -14,10 +14,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useTheme, GOLD } from "../../context/ThemeContext";
 import { useGenrePage } from "../../src/hooks/useMovies";
+import { useIsDesktop, CONTENT_MAX_WIDTH } from "../../src/hooks/useIsDesktop";
 import { NEW_LISTING_SEGMENT } from "../../src/lib/api";
 import MovieCard from "../../src/components/MovieCard";
 
-const { width: SCREEN_W } = Dimensions.get("window");
 const CARD_GAP = 12;
 
 function columnsFor(width) {
@@ -34,14 +34,17 @@ export default function Category() {
   const { genre, movies, total, hasMore, loading, error, loadingMore, moreError, loadMore, reload } =
     useGenrePage(id);
   const isNewListing = id === NEW_LISTING_SEGMENT;
+  const { width: windowW } = useWindowDimensions();
+  const isDesktop = useIsDesktop();
+  const contentW = isDesktop ? Math.min(windowW, CONTENT_MAX_WIDTH) : windowW;
 
-  const columns = columnsFor(SCREEN_W);
-  const cardWidth = Math.floor((SCREEN_W - 40 - (2 * columns - 1) * CARD_GAP) / columns);
+  const columns = columnsFor(windowW);
+  const cardWidth = Math.floor((contentW - 40 - (2 * columns - 1) * CARD_GAP) / columns);
 
   const goBack = useCallback(() => {
-    try {
+    if (router.canGoBack()) {
       router.back();
-    } catch (_e) {
+    } else {
       router.navigate("/home");
     }
   }, []);
@@ -50,7 +53,7 @@ export default function Category() {
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: theme.background }]} edges={["top"]}>
-      <View style={styles.headerBar}>
+      <View style={[styles.headerBar, isDesktop && styles.headerBarWide]}>
         <TouchableOpacity
           onPress={goBack}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -60,7 +63,7 @@ export default function Category() {
           <Ionicons name="chevron-back" size={26} color={theme.text} />
         </TouchableOpacity>
         <View style={styles.headerText}>
-          <Text style={[styles.title, { color: theme.text }]} numberOfLines={1}>
+          <Text style={[styles.title, { color: theme.text }, isDesktop && styles.titleWide]} numberOfLines={1}>
             {isNewListing ? "New Movies" : genre?.name ?? "Category"}
           </Text>
           {!loading && !error && (
@@ -122,7 +125,7 @@ export default function Category() {
           data={movies}
           keyExtractor={(item) => item.id}
           numColumns={columns}
-          contentContainerStyle={styles.grid}
+          contentContainerStyle={[styles.grid, isDesktop && styles.gridWide]}
           columnWrapperStyle={{ gap: CARD_GAP }}
           renderItem={({ item }) => (
             <MovieCard movie={item} width={cardWidth} onPress={openMovie} />
@@ -176,8 +179,10 @@ const styles = StyleSheet.create({
     paddingTop: 6,
     paddingBottom: 10,
   },
+  headerBarWide: { paddingHorizontal: 32 },
   headerText: { flex: 1 },
   title: { fontSize: 24, fontWeight: "900", letterSpacing: -0.4 },
+  titleWide: { fontSize: 28 },
   count: {
     fontSize: 10.5,
     fontWeight: "800",
@@ -209,6 +214,7 @@ const styles = StyleSheet.create({
   retryText: { color: "#111", fontSize: 14, fontWeight: "800", letterSpacing: 0.3 },
 
   grid: { paddingHorizontal: 20, paddingTop: 6, paddingBottom: 34 },
+  gridWide: { paddingHorizontal: 32, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
 
   footerBlock: { paddingTop: 22, alignItems: "center" },
   moreBtn: {

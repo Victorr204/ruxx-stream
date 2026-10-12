@@ -14,6 +14,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const PAYSTACK_SECRET_KEY = Deno.env.get("PAYSTACK_SECRET_KEY") ?? "";
 const PAYSTACK_PLAN_AMOUNT = Number(Deno.env.get("PAYSTACK_PLAN_AMOUNT") ?? "150000");
+const PAYSTACK_PROMO_BASE_AMOUNT = Number(Deno.env.get("PAYSTACK_PROMO_BASE_AMOUNT") ?? "100000");
 
 // Built once per cold start; typed off the concrete call so helper
 // signatures never drift from the client's inferred generics.
@@ -81,7 +82,9 @@ function customerCodeOf(value: unknown): string | null {
 /**
  * Flips is_premium for one profile, located by user id (from transaction
  * metadata), by the payer's email (payment-page charges), or by the
- * Paystack customer code stored at first charge.
+ * Paystack customer code stored at first charge. premiumUntil opens a
+ * bounded window for one-time charges (bank transfer) and clears it for
+ * subscription charges, which renew on their own.
  */
 async function applyProfile(
   db: AdminClient,
@@ -90,16 +93,17 @@ async function applyProfile(
     customerCode: string | null;
     email: string | null;
     premium: boolean;
+    premiumUntil: string | null;
   },
 ): Promise<void> {
-  const { userId, customerCode, email, premium } = args;
+  const { userId, customerCode, email, premium, premiumUntil } = args;
   const ownerId = userId ?? (email ? await userIdForEmail(db, email) : null);
   if (!ownerId && !customerCode) {
     console.warn("[paystack-webhook] no profile mapping for event", { premium });
     return;
   }
 
-  const update: Record<string, unknown> = { is_premium: premium };
+  const update: Record<string, unknown> = { is_premium: premium, premium_until: premiumUntil };
   if (customerCode) update.billing_customer_id = customerCode;
 
   let query = db.from("profiles").update(update);
@@ -168,16 +172,28 @@ Deno.serve(async (req) => {
         : null;
     const status = str(object.status);
     const amount = Number(object.amount ?? 0);
+    const metadataMap =
+      object.metadata && typeof object.metadata === "object"
+        ? (object.metadata as Record<string, unknown>)
+        : null;
+    const premiumDays = Number(metadataMap?.premium_days ?? 0);
+    const promo = metadataMap?.promo === true;
+    const premiumUntil =
+      premiumDays > 0
+        ? new Date(Date.now() + premiumDays * 86_400_000).toISOString()
+        : null;
 
     switch (event.event) {
       case "charge.success": {
-        const paid = status === "success" && amount >= PAYSTACK_PLAN_AMOUNT;
+        const minAmount = promo ? PAYSTACK_PROMO_BASE_AMOUNT : PAYSTACK_PLAN_AMOUNT;
+        const paid = status === "success" && amount >= minAmount;
         if (paid) {
           await applyProfile(admin, {
             userId: metadataUid,
             customerCode,
             email: customerEmail,
             premium: true,
+            premiumUntil,
           });
         }
         break;
@@ -190,6 +206,7 @@ Deno.serve(async (req) => {
           customerCode,
           email: customerEmail,
           premium: true,
+          premiumUntil: null,
         });
         break;
       case "subscription.disable":
@@ -199,6 +216,7 @@ Deno.serve(async (req) => {
           customerCode,
           email: customerEmail,
           premium: false,
+          premiumUntil: null,
         });
         break;
       case "invoice.payment_failed":

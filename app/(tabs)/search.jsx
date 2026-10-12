@@ -7,7 +7,7 @@ import {
   FlatList,
   ActivityIndicator,
   TouchableOpacity,
-  Dimensions,
+  useWindowDimensions,
   ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -16,11 +16,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useTheme, GOLD } from "../../context/ThemeContext";
 import { useSearch } from "../../src/hooks/useMovies";
+import { useIsDesktop, useContentWidth, CONTENT_MAX_WIDTH } from "../../src/hooks/useIsDesktop";
 import MovieCard from "../../src/components/MovieCard";
 import MovieRow from "../../src/components/MovieRow";
+import BannerAdSlot from "../../src/components/BannerAdSlot";
 import { fetchNewestMovies, fetchPopularGenres, fetchTrendingMovies } from "../../src/lib/api";
-
-const { width: SCREEN_W } = Dimensions.get("window");
 
 function columnsFor(width) {
   if (width >= 1000) return 6;
@@ -35,6 +35,9 @@ export default function Search() {
   const [touched, setTouched] = useState(false);
   const [sugg, setSugg] = useState({ loaded: false, top: [], genres: [], error: null });
   const { data: results, loading, error } = useSearch(query);
+  const { width: windowW } = useWindowDimensions();
+  const isDesktop = useIsDesktop();
+  const contentW = useContentWidth();
 
   useEffect(() => {
     if (!touched || sugg.loaded) return undefined;
@@ -65,18 +68,18 @@ export default function Search() {
     };
   }, [touched, sugg.loaded]);
 
-  const columns = columnsFor(SCREEN_W);
+  const columns = columnsFor(isDesktop ? contentW : windowW);
   const gap = 12;
-  const cardWidth = Math.floor((SCREEN_W - 40 - (2 * columns - 1) * gap) / columns);
+  const cardWidth = Math.floor((contentW - 40 - (2 * columns - 1) * gap) / columns);
 
   const hasQuery = query.trim().length > 0;
   const showSuggestions = touched && !hasQuery;
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: theme.background }]} edges={["top"]}>
-      <Text style={[styles.header, { color: theme.text }]}>Search</Text>
+      <Text style={[styles.header, { color: theme.text }, isDesktop && styles.headerWide]}>Search</Text>
 
-      <View style={[styles.searchBox, { backgroundColor: theme.inputBackground, borderColor: theme.inputBorder }]}>
+      <View style={[styles.searchBox, { backgroundColor: theme.inputBackground, borderColor: theme.inputBorder }, isDesktop && styles.searchBoxWide]}>
         <Ionicons name="search-outline" size={18} color={theme.placeholder} />
         <TextInput
           value={query}
@@ -123,7 +126,7 @@ export default function Search() {
 
       {!loading && !error && showSuggestions && (
         <ScrollView
-          contentContainerStyle={styles.suggScroll}
+          contentContainerStyle={[styles.suggScroll, isDesktop && styles.constrainWide]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
@@ -221,7 +224,7 @@ export default function Search() {
           keyExtractor={(item) => item.id}
           numColumns={columns}
           keyboardShouldPersistTaps="handled"
-          contentContainerStyle={styles.grid}
+          contentContainerStyle={[styles.grid, isDesktop && styles.gridWide]}
           columnWrapperStyle={{ gap }}
           renderItem={({ item }) => (
             <MovieCard
@@ -232,6 +235,8 @@ export default function Search() {
           )}
         />
       )}
+
+      <BannerAdSlot />
     </SafeAreaView>
   );
 }
@@ -246,6 +251,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 14,
   },
+  headerWide: { fontSize: 30, marginHorizontal: 32 },
 
   searchBox: {
     flexDirection: "row",
@@ -258,6 +264,7 @@ const styles = StyleSheet.create({
     height: 50,
     marginBottom: 16,
   },
+  searchBoxWide: { marginHorizontal: 0, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
   input: { flex: 1, fontSize: 15, height: 46, padding: 0 },
 
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 30 },
@@ -319,4 +326,6 @@ const styles = StyleSheet.create({
   },
 
   grid: { paddingHorizontal: 20, paddingBottom: 30, gap: 16 },
+  gridWide: { paddingHorizontal: 32, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
+  constrainWide: { maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
 });

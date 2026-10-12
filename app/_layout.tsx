@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Platform } from "react-native";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as NativeSplash from "expo-splash-screen";
@@ -8,6 +9,7 @@ import AppSplash from "../utils/AppSplash";
 import { setBootSession } from "../utils/bootSession";
 import { useAuthStore } from "../src/stores/auth";
 import { useDownloadsStore } from "../src/stores/downloads";
+import { setupNotificationTaps } from "../src/lib/notifications";
 
 // Keep the native splash up until the JS AppSplash has painted, so the dark
 // logo screen reads as one continuous splash (same pattern as ruxx prepaid).
@@ -34,6 +36,16 @@ function AppWrapper() {
     const init = async () => {
       NativeSplash.hideAsync().catch(() => {});
 
+      // iOS App Tracking Transparency: must be requested before any ad
+      // request. Fire-and-forget — the result only affects ad personalization.
+      // Imported lazily: the module has no web implementation and a static
+      // import crashes the browser bundle.
+      if (Platform.OS === "ios") {
+        import("expo-tracking-transparency")
+          .then(({ requestTrackingPermissionsAsync }) => requestTrackingPermissionsAsync())
+          .catch(() => {});
+      }
+
       // Restore the Supabase session (AsyncStorage-backed) before deciding
       // the first screen, so a warm start never flashes the landing.
       await useAuthStore.getState().initialize();
@@ -58,6 +70,13 @@ function AppWrapper() {
       setChecking(false);
     });
   }, []);
+
+  // Notification taps push routes, so they may only be handled once the
+  // Stack below is mounted (during the splash/boot gate router isn't ready).
+  useEffect(() => {
+    if (checking) return undefined;
+    return setupNotificationTaps();
+  }, [checking]);
 
   if (checking) return <AppSplash />;
 

@@ -1,9 +1,38 @@
+import { View } from "react-native";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme, GOLD } from "../../context/ThemeContext";
+import DesktopSidebar from "../../src/components/DesktopSidebar";
+import { useIsDesktop } from "../../src/hooks/useIsDesktop";
 
 export default function TabsLayout() {
   const { theme } = useTheme();
+  const isDesktop = useIsDesktop();
+
+  if (isDesktop) {
+    return (
+      <View style={{ flex: 1, flexDirection: "row", backgroundColor: theme.background }}>
+        <DesktopSidebar />
+        <View style={{ flex: 1 }}>
+          <Tabs
+            screenOptions={{
+              headerShown: false,
+              tabBarActiveTintColor: GOLD,
+              tabBarInactiveTintColor: theme.placeholder,
+              tabBarStyle: { display: "none" },
+              tabBarLabelStyle: { fontSize: 11, fontWeight: "600" },
+            }}
+          >
+            <Tabs.Screen name="home" options={{ title: "Home" }} />
+            <Tabs.Screen name="search" options={{ title: "Search" }} />
+            <Tabs.Screen name="mylist" options={{ title: "My List" }} />
+            <Tabs.Screen name="downloads" options={{ title: "Downloads" }} />
+            <Tabs.Screen name="profile" options={{ title: "Profile" }} />
+          </Tabs>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <Tabs

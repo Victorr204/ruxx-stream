@@ -4,6 +4,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Platform, StyleSheet, View } from "react-native";
+import "react-native-url-polyfill/auto";
+import Constants from "expo-constants";
 import { WebView } from "react-native-webview";
 import type {
   EngineMessage,
@@ -12,6 +14,47 @@ import type {
 import { useScanStore } from "../stores/scan";
 
 const SITE_URL = (process.env.EXPO_PUBLIC_SITE_URL ?? "").replace(/\/$/, "");
+
+const isLoopback = (host: string): boolean =>
+  host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+
+// EXPO_PUBLIC_SITE_URL is a dev origin (http://localhost:8081) — correct in a
+// browser and on the iOS simulator, but on a phone "localhost" is the phone
+// itself, so the WebView fails with net::ERR_CONNECTION_REFUSED. Rewrite
+// loopback origins to the host Metro reports it is reachable on (LAN IP of
+// this machine on a device, 10.0.2.2 from the Android emulator).
+function resolveNativeOrigin(): string {
+  if (!SITE_URL) {
+    console.warn("[scan] EXPO_PUBLIC_SITE_URL is not set; the transcription engine cannot start");
+    return "";
+  }
+  let origin: URL;
+  try {
+    origin = new URL(SITE_URL);
+  } catch {
+    console.warn("[scan] EXPO_PUBLIC_SITE_URL is not a URL:", SITE_URL);
+    return "";
+  }
+  if (!isLoopback(origin.hostname)) return origin.origin;
+
+  // Metro's own address for this session: the machine's LAN IP on a device,
+  // 10.0.2.2 / 127.0.0.1 from the Android emulator. A loopback address from
+  // there is still the phone, so on Android always fall back to the
+  // emulator's alias for the host machine (the iOS simulator is already
+  // on the host, so it keeps the configured localhost).
+  const [metroHost, metroPort] = (Constants.expoConfig?.hostUri ?? "").split(":");
+  const host = metroHost && !isLoopback(metroHost)
+    ? metroHost
+    : Platform.OS === "android"
+      ? "10.0.2.2"
+      : "";
+  if (!host) return origin.origin;
+  origin.hostname = host;
+  if (metroPort) origin.port = metroPort;
+  return origin.origin;
+}
+
+const NATIVE_ORIGIN = Platform.OS === "web" ? "" : resolveNativeOrigin();
 
 function parseEngineMessage(raw: unknown): EngineMessage | null {
   if (typeof raw !== "string") return null;
@@ -82,6 +125,7 @@ export default function ScanEngine() {
   }, [status]);
 
   if (Platform.isTV) return null;
+  if (Platform.OS !== "web" && !NATIVE_ORIGIN) return null;
   if (status === "idle" && !engineReady) {
     // Nothing running: keep web warm with the hidden frame, skip native mount.
     if (Platform.OS !== "web") return null;
@@ -105,7 +149,7 @@ export default function ScanEngine() {
     <View style={styles.native} pointerEvents="none">
       <WebView
         ref={viewRef}
-        source={{ uri: `${SITE_URL}/transcribe` }}
+        source={{ uri: `${NATIVE_ORIGIN}/transcribe` }}
         onMessage={onNativeMessage}
         originWhitelist={["*"]}
         style={styles.webview}

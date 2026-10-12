@@ -9,6 +9,8 @@ import AppAlert from "../../utils/AppAlert";
 import { useDownloadsStore } from "../../src/stores/downloads";
 import { formatBytes } from "../../src/lib/downloads";
 import { formatRuntime } from "../../src/lib/format";
+import { useIsDesktop, CONTENT_MAX_WIDTH } from "../../src/hooks/useIsDesktop";
+import { isDesktopShell } from "../../src/lib/platform";
 
 export default function Downloads() {
   const { theme } = useTheme();
@@ -17,6 +19,7 @@ export default function Downloads() {
   const cancelDownload = useDownloadsStore((s) => s.cancelDownload);
   const removeDownload = useDownloadsStore((s) => s.removeDownload);
   const startDownload = useDownloadsStore((s) => s.startDownload);
+  const isDesktop = useIsDesktop();
 
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
   const [pendingRemove, setPendingRemove] = useState(null);
@@ -34,7 +37,8 @@ export default function Downloads() {
   );
 
   const totalBytes = list.reduce((sum, e) => sum + (e.fileSizeBytes || 0), 0);
-  const isWeb = Platform.OS === "web";
+  // Browser tab only: the desktop app downloads like the mobile apps do.
+  const isWeb = Platform.OS === "web" && !isDesktopShell();
 
   const handlePlay = (entry) => router.push(`/player/${entry.movieId}`);
 
@@ -179,8 +183,8 @@ export default function Downloads() {
         onClose={() => setAlert((a) => ({ ...a, visible: false }))}
       />
 
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        <Animated.Text entering={FadeInDown.duration(400)} style={[styles.header, { color: theme.text }]}>
+      <ScrollView contentContainerStyle={[styles.scroll, isDesktop && styles.scrollWide]} showsVerticalScrollIndicator={false}>
+        <Animated.Text entering={FadeInDown.duration(400)} style={[styles.header, { color: theme.text }, isDesktop && styles.headerWide]}>
           Downloads
         </Animated.Text>
 
@@ -249,7 +253,9 @@ export default function Downloads() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   scroll: { padding: 20, paddingBottom: 40, gap: 12 },
+  scrollWide: { padding: 32, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
   header: { fontSize: 28, fontWeight: "900", letterSpacing: -0.5 },
+  headerWide: { fontSize: 32 },
   summary: { fontSize: 13, marginTop: -4 },
 
   list: { gap: 12 },

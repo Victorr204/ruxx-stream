@@ -7,15 +7,33 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "channel": "development"
+      "channel": "development",
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://fcpjduweupgnyqkfqlqx.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable__5BYqCcLVbm30GUECwetrA_0Cld4ZaL",
+        "EXPO_PUBLIC_SITE_URL": "http://localhost:8081"
+      }
     },
     "preview": {
       "distribution": "internal",
-      "channel": "preview"
+      "channel": "preview",
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://fcpjduweupgnyqkfqlqx.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable__5BYqCcLVbm30GUECwetrA_0Cld4ZaL",
+        "EXPO_PUBLIC_SITE_URL": "http://localhost:8081"
+      }
     },
     "production": {
       "autoIncrement": true,
-      "channel": "production"
+      "channel": "production",
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://fcpjduweupgnyqkfqlqx.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable__5BYqCcLVbm30GUECwetrA_0Cld4ZaL",
+        "EXPO_PUBLIC_SITE_URL": "https://app.ruxxdigital.name.ng",
+        "EXPO_PUBLIC_ADSENSE_CLIENT": "ca-pub-9942550938838021",
+        "EXPO_PUBLIC_ADSENSE_BANNER_SLOT": "",
+        "EXPO_PUBLIC_ADSENSE_INTERSTITIAL_SLOT": ""
+      }
     },
     "android-tv": {
       "extends": "preview",

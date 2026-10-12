@@ -536,10 +536,10 @@ export type StreamSource = {
 };
 
 /**
- * Playable URL for a movie. Prefers the sign-stream-url edge function (HLS
- * renditions + signed CDN URLs); falls back to the raw public stream_url so
- * local dev without deployed functions still plays. Returns null when the
- * title has no directly playable source (e.g. R2-only without the function).
+ * Playable URL for a movie. Only the sign-stream-url edge function mints
+ * them (HLS renditions + signed CDN URLs): `stream_url` is column-revoked
+ * from client roles, so there is no raw fallback — a failed invoke means
+ * the title isn't playable right now and the caller should surface that.
  */
 export async function resolveStreamUrl(movieId: string): Promise<StreamSource | null> {
   const sb = getSupabase();
@@ -556,25 +556,16 @@ export async function resolveStreamUrl(movieId: string): Promise<StreamSource | 
       };
     }
   } catch (e) {
-    console.warn("[playback] sign-stream-url unavailable, trying direct", e);
+    console.warn("[playback] sign-stream-url failed", e);
   }
 
-  const { data, error } = await sb
-    .from("movies")
-    .select("stream_url")
-    .eq("id", movieId)
-    .eq("is_active", true)
-    .maybeSingle();
-  if (error) throw new Error(message(error));
-
-  const url = (data as { stream_url?: string | null } | null)?.stream_url;
-  return url ? { url, quality: "free", source: "direct" } : null;
+  return null;
 }
 
 /**
  * Byte-range-capable URL for the in-app audio scanner. Same signing path as
- * playback but tagged `purpose: "scan"` so no play is recorded, and it throws
- * when nothing is playable (the scanner cannot fall back to "sort of works").
+ * playback, but it throws when nothing is playable (the scanner cannot fall
+ * back to "sort of works").
  */
 export async function resolveScanUrl(movieId: string): Promise<string> {
   const sb = getSupabase();
@@ -584,18 +575,9 @@ export async function resolveScanUrl(movieId: string): Promise<string> {
     });
     if (!error && data && typeof data.url === "string" && data.url) return data.url;
   } catch (e) {
-    console.warn("[scan] sign-stream-url unavailable, trying direct", e);
+    console.warn("[scan] sign-stream-url failed", e);
   }
-  const { data, error } = await sb
-    .from("movies")
-    .select("stream_url")
-    .eq("id", movieId)
-    .eq("is_active", true)
-    .maybeSingle();
-  if (error) throw new Error(message(error));
-  const url = (data as { stream_url?: string | null } | null)?.stream_url;
-  if (!url) throw new Error("This movie has no streamable source to scan");
-  return url;
+  throw new Error("This movie has no streamable source to scan");
 }
 
 /** Stores an engine-produced transcript (origin "generated") server-side. */
@@ -629,23 +611,6 @@ export async function saveGeneratedTranscript(input: {
       throw new Error("An uploaded subtitle file already exists for this language");
     }
     throw new Error(detail);
-  }
-}
-
-/** Manual mid-roll cue points for a title (empty when none are placed). */
-export async function fetchAdMarkers(movieId: string): Promise<number[]> {
-  try {
-    const { data, error } = await getSupabase()
-      .from("ad_markers")
-      .select("at_seconds")
-      .eq("movie_id", movieId)
-      .eq("kind", "mid_roll")
-      .order("at_seconds", { ascending: true });
-    if (error) throw new Error(message(error));
-    return (data ?? []).map((row) => (row as { at_seconds: number }).at_seconds);
-  } catch (e) {
-    console.warn("[playback] ad markers unavailable", e);
-    return [];
   }
 }
 
@@ -780,16 +745,20 @@ export type CheckoutResult =
   | { url: string; reference?: string }
   | { url: null; reason: "not-configured" | "already-premium" | "error"; message?: string };
 
+export type CheckoutMode = "subscription" | "transfer";
+
 /**
  * Ask the checkout edge function to initialize a Paystack transaction.
+ * `subscription` opens the recurring card checkout (plan-bound), `transfer`
+ * opens a one-time Pay-with-Transfer charge that grants a 30-day window.
  * Falls back to `not-configured` while Paystack secrets are unset, so the
  * app keeps its "Premium is coming soon" state on fresh installs.
  */
-export async function startCheckout(): Promise<CheckoutResult> {
+export async function startCheckout(mode: CheckoutMode = "subscription"): Promise<CheckoutResult> {
   const sb = getSupabase();
   try {
     const { data, error } = await sb.functions.invoke("checkout", {
-      body: { redirect_url: checkoutRedirectUrl() },
+      body: { redirect_url: checkoutRedirectUrl(), mode },
     });
     if (error) return { url: null, reason: "error", message: error.message };
     if (data?.configured === false) return { url: null, reason: "not-configured" };

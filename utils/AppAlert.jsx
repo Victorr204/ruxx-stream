@@ -9,7 +9,7 @@ const FALLBACK_THEME = {
   subtitle: "#555555",
 };
 
-export default function AppAlert({ visible, title, message, type = "error", onClose, theme }) {
+export default function AppAlert({ visible, title, message, type = "error", onClose, theme, accent = null }) {
   const ctx = useTheme();
   const t = theme || ctx?.theme || FALLBACK_THEME;
   const colorMap = {
@@ -17,14 +17,18 @@ export default function AppAlert({ visible, title, message, type = "error", onCl
     success: "#34C759",
     info: "#007AFF",
   };
-  const accent = colorMap[type] || colorMap.error;
+  const base = colorMap[type] || colorMap.error;
+  // Callers may pin an accent (e.g. the app gold) so subscription alerts
+  // read as part of the theme instead of iOS system colors.
+  const accentColor = accent || base;
+  const accentText = accent ? "#111111" : "#ffffff";
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 30, backgroundColor: t.modalOverlay || "rgba(0,0,0,0.5)" }}>
         <View style={{ width: "100%", borderRadius: 20, padding: 28, alignItems: "center", backgroundColor: t.card || "#fff", shadowColor: "#000", shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.25, shadowRadius: 20, elevation: 10 }}>
-          <View style={{ width: 56, height: 56, borderRadius: 28, justifyContent: "center", alignItems: "center", marginBottom: 16, backgroundColor: accent + "18" }}>
-            <Text style={{ fontSize: 26, fontWeight: "700", color: accent }}>
+          <View style={{ width: 56, height: 56, borderRadius: 28, justifyContent: "center", alignItems: "center", marginBottom: 16, backgroundColor: accentColor + "18" }}>
+            <Text style={{ fontSize: 26, fontWeight: "700", color: accentColor }}>
               {type === "success" ? "✓" : type === "info" ? "i" : "!"}
             </Text>
           </View>
@@ -32,10 +36,10 @@ export default function AppAlert({ visible, title, message, type = "error", onCl
           <Text style={{ fontSize: 14, textAlign: "center", lineHeight: 20, marginBottom: 24, color: t.subtitle || "#888" }}>{message}</Text>
           <TouchableOpacity
             onPress={onClose}
-            style={{ width: "100%", paddingVertical: 14, borderRadius: 12, alignItems: "center", backgroundColor: accent }}
+            style={{ width: "100%", paddingVertical: 14, borderRadius: 12, alignItems: "center", backgroundColor: accentColor }}
             activeOpacity={0.8}
           >
-            <Text style={{ color: "#fff", fontSize: 16, fontWeight: "600" }}>OK</Text>
+            <Text style={{ color: accentText, fontSize: 16, fontWeight: "600" }}>OK</Text>
           </TouchableOpacity>
         </View>
       </View>

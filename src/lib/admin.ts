@@ -15,7 +15,6 @@ export type AdminMovie = {
   poster_url: string | null;
   backdrop_url: string | null;
   trailer_url: string | null;
-  stream_url: string | null;
   r2_key_free: string | null;
   is_active: boolean;
   is_featured: boolean;
@@ -91,7 +90,6 @@ const ADMIN_MOVIE_COLS = [
   "poster_url",
   "backdrop_url",
   "trailer_url",
-  "stream_url",
   "r2_key_free",
   "is_active",
   "is_featured",
@@ -120,7 +118,6 @@ function movieRow(input: AdminMovieInput): Record<string, unknown> {
     poster_url: input.poster_url,
     backdrop_url: input.backdrop_url,
     trailer_url: input.trailer_url,
-    stream_url: input.stream_url,
     r2_key_free: input.r2_key_free,
     is_active: input.is_active,
     is_featured: input.is_featured,
@@ -348,11 +345,18 @@ export async function fetchGrants(): Promise<GrantRecord[]> {
 export async function fetchProfileSummaries(): Promise<ProfileSummary[]> {
   const { data, error } = await getSupabase()
     .from("profiles")
-    .select("id, display_name, role, is_premium, created_at")
+    .select("id, display_name, role, is_premium, premium_until, created_at")
     .order("created_at", { ascending: false })
     .limit(500);
   if (error) throw new Error(message(error));
-  return (data ?? []) as unknown as ProfileSummary[];
+  return ((data ?? []) as unknown as (ProfileSummary & { premium_until: string | null })[]).map(
+    (row) => ({
+      ...row,
+      is_premium:
+        row.is_premium &&
+        (!row.premium_until || new Date(row.premium_until).getTime() > Date.now()),
+    }),
+  );
 }
 
 /** Lightweight id/title list for pickers (includes inactive titles). */
@@ -408,10 +412,24 @@ export async function saveAdminSubtitle(input: {
   label: string;
   source: string;
 }): Promise<void> {
-  const { error } = await getSupabase()
+  const sb = getSupabase();
+  const payload = { ...input, origin: "upload" as const };
+  // Only ever replace an existing admin upload — a viewer-generated subtitle
+  // (origin 'generated') must survive an admin re-upload for the same
+  // language, so the update is scoped to upload rows and the insert is the
+  // fallback when no admin row exists yet.
+  const { data: updated, error: updateError } = await sb
     .from("movie_subtitles")
-    .upsert(input, { onConflict: "movie_id,language" });
-  if (error) throw new Error(message(error));
+    .update(payload)
+    .eq("movie_id", input.movie_id)
+    .eq("language", input.language)
+    .eq("origin", "upload")
+    .select("id");
+  if (updateError) throw new Error(message(updateError));
+  if (updated && updated.length > 0) return;
+
+  const { error: insertError } = await sb.from("movie_subtitles").insert(payload);
+  if (insertError) throw new Error(message(insertError));
 }
 
 export async function deleteAdminSubtitle(id: string): Promise<void> {
@@ -419,5 +437,88 @@ export async function deleteAdminSubtitle(id: string): Promise<void> {
     .from("movie_subtitles")
     .delete()
     .eq("id", id);
+  if (error) throw new Error(message(error));
+}
+
+export type AdminStats = {
+  movies_total: number;
+  movies_active: number;
+  users_total: number;
+  premium_users: number;
+  plays_30d: number;
+  ad_impressions_30d: number;
+};
+
+/** Dashboard counters (movies, users, premium, plays, ad impressions). */
+export async function fetchAdminStats(): Promise<AdminStats> {
+  const { data, error } = await getSupabase().rpc("admin_stats");
+  if (error) throw new Error(message(error));
+  return (data ?? {}) as AdminStats;
+}
+
+export type AdminUserRow = {
+  id: string;
+  display_name: string | null;
+  email: string | null;
+  role: string;
+  is_premium: boolean;
+  created_at: string;
+  last_sign_in: string | null;
+};
+
+/** All accounts with premium + last-sign-in columns (admin-only RPC). */
+export async function fetchAdminUsers(): Promise<AdminUserRow[]> {
+  const { data, error } = await getSupabase().rpc("admin_list_users");
+  if (error) throw new Error(message(error));
+  return (data ?? []) as AdminUserRow[];
+}
+
+export type AdminGenre = {
+  id: string;
+  name: string;
+  slug: string;
+  sort_order: number;
+  created_at: string;
+};
+
+/** All genres, ordered � admins can create, rename, and reorder them. */
+export async function fetchAdminGenres(): Promise<AdminGenre[]> {
+  const { data, error } = await getSupabase()
+    .from("genres")
+    .select("id, name, slug, sort_order, created_at")
+    .order("sort_order", { ascending: true })
+    .order("name", { ascending: true });
+  if (error) throw new Error(message(error));
+  return (data ?? []) as AdminGenre[];
+}
+
+export async function createGenre(name: string, sortOrder: number): Promise<void> {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!slug) throw new Error("Genre name needs at least one letter or digit.");
+  const { error } = await getSupabase()
+    .from("genres")
+    .insert({ name: name.trim(), slug, sort_order: sortOrder });
+  if (error) throw new Error(message(error));
+}
+
+export async function updateGenre(id: string, patch: { name?: string; sort_order?: number }): Promise<void> {
+  const update: Record<string, unknown> = {};
+  if (patch.name !== undefined) {
+    update.name = patch.name.trim();
+    update.slug = patch.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+  if (patch.sort_order !== undefined) update.sort_order = patch.sort_order;
+  const { error } = await getSupabase().from("genres").update(update).eq("id", id);
+  if (error) throw new Error(message(error));
+}
+
+export async function deleteGenre(id: string): Promise<void> {
+  const { error } = await getSupabase().from("genres").delete().eq("id", id);
   if (error) throw new Error(message(error));
 }

@@ -25,6 +25,7 @@ type AdMobModule = {
     createForAdRequest: (unitId: string, options?: Record<string, unknown>) => InterstitialHandle;
   };
   AdEventType: { LOADED: string; ERROR: string; OPENED: string; CLOSED: string };
+  MobileAds?: () => { initialize: () => Promise<unknown> };
 };
 
 let cachedModule: AdMobModule | null | undefined;
@@ -42,6 +43,23 @@ function loadAdsModule(): AdMobModule | null {
   return cachedModule;
 }
 
+let initPromise: Promise<void> | null = null;
+
+export function ensureAdsInitialized(): Promise<void> {
+  if (!initPromise) {
+    initPromise = (async () => {
+      const ads = loadAdsModule();
+      if (!ads?.MobileAds) return;
+      try {
+        await ads.MobileAds().initialize();
+      } catch (e) {
+        console.warn("[ads] MobileAds initialize failed", e);
+      }
+    })();
+  }
+  return initPromise;
+}
+
 const LOAD_TIMEOUT_MS = 12000;
 
 /**
@@ -56,6 +74,7 @@ export async function showNativeInterstitial(unitId: string): Promise<AdShowStat
   if (!unitId || !canUseNativeAds()) return "unavailable";
   const ads = loadAdsModule();
   if (!ads) return "unavailable";
+  await ensureAdsInitialized();
 
   return new Promise<AdShowStatus>((resolve) => {
     let settled = false;

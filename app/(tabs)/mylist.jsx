@@ -10,12 +10,13 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { GOLD, GOLD_GRADIENT, useTheme } from "../../context/ThemeContext";
 import { useAuthStore } from "../../src/stores/auth";
+import { useIsDesktop, CONTENT_MAX_WIDTH } from "../../src/hooks/useIsDesktop";
 import AppAlert from "../../utils/AppAlert";
 import {
   createUserList,
@@ -30,6 +31,7 @@ export default function MyList() {
   const profile = useAuthStore((s) => s.profile);
   const isPremium = profile?.is_premium ?? false;
   const limit = listLimitFor(isPremium);
+  const isDesktop = useIsDesktop();
 
   const [lists, setLists] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -62,6 +64,25 @@ export default function MyList() {
       cancelled = true;
     };
   }, [nonce]);
+
+  // Lists are created/deleted from movie pages — refetch when the tab
+  // regains focus so the grid never shows stale membership.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      fetchUserLists()
+        .then((data) => {
+          if (!cancelled) {
+            setLists(data);
+            setError(null);
+          }
+        })
+        .catch(() => undefined);
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
 
   const reload = useCallback(() => {
     setLoading(true);
@@ -146,17 +167,17 @@ export default function MyList() {
         <LinearGradient colors={["rgba(232,184,74,0.09)", "rgba(232,184,74,0)"]} style={StyleSheet.absoluteFill} />
       </View>
 
-      <View style={styles.header}>
+      <View style={[styles.header, isDesktop && styles.headerWide]}>
         <View style={styles.headerLeft}>
           <View style={styles.tick} />
-          <Text style={[styles.title, { color: theme.text }]}>My List</Text>
+          <Text style={[styles.title, { color: theme.text }, isDesktop && styles.titleWide]}>My List</Text>
         </View>
         <Text style={[styles.limit, { color: theme.placeholder }]}>
           {lists.length} / {limit} lists · {isPremium ? "Premium" : "Free plan"}
         </Text>
       </View>
 
-      <View style={styles.createRow}>
+      <View style={[styles.createRow, isDesktop && styles.createRowWide]}>
         <TextInput
           ref={nameInputRef}
           value={newName}
@@ -221,7 +242,7 @@ export default function MyList() {
         </View>
       ) : (
         <ScrollView
-          contentContainerStyle={styles.scroll}
+          contentContainerStyle={[styles.scroll, isDesktop && styles.scrollWide]}
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={loading} onRefresh={reload} tintColor={GOLD} />}
         >
@@ -300,12 +321,15 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 12,
   },
+  headerWide: { paddingHorizontal: 32 },
   headerLeft: { flexDirection: "row", alignItems: "center", gap: 9 },
   tick: { width: 3, height: 15, borderRadius: 2, backgroundColor: GOLD },
   title: { fontSize: 24, fontWeight: "900", letterSpacing: -0.4 },
+  titleWide: { fontSize: 28 },
   limit: { fontSize: 11, fontWeight: "800", letterSpacing: 0.8, textTransform: "uppercase" },
 
   createRow: { flexDirection: "row", gap: 10, paddingHorizontal: 20, marginBottom: 12 },
+  createRowWide: { paddingHorizontal: 32 },
   input: {
     flex: 1,
     borderWidth: 1,
@@ -351,6 +375,7 @@ const styles = StyleSheet.create({
   retryText: { color: "#111", fontSize: 14, fontWeight: "800" },
 
   scroll: { paddingHorizontal: 20, paddingBottom: 30, gap: 10 },
+  scrollWide: { paddingHorizontal: 32, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
   listCard: {
     flexDirection: "row",
     alignItems: "center",

@@ -1,6 +1,7 @@
 # ruxx stream
 
-Multi-platform movie streaming app (iOS, Android, Android TV, Web/PWA) built with
+Multi-platform movie streaming app (iOS, Android, Android TV, Web/PWA,
+Windows/macOS desktop) built with
 Expo SDK 57, Supabase (free tier) and Backblaze B2 for video storage.
 
 > Content note: only upload media you own or are licensed to distribute.
@@ -22,6 +23,15 @@ Fill in `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY`
 Row Level Security. Add `EXPO_PUBLIC_SITE_URL` for the web origin.
 
 ### 3. Run the SQL
+
+> **Free-tier rule — 7-file cap.** The Supabase free plan allows at most
+> **seven migration files** per project and the set below is already at that
+> limit. Until the project is upgraded to a paid plan, **never add an eighth
+> file**: append new SQL as a commented, *idempotent* section at the end of
+> `supabase/migrations/20261008140000_home_lists_subtitles.sql` (item 7, the
+> merged file), then document the section in the list below. Every section must
+> be safe to re-run because the whole file is pasted again on each change.
+> After the upgrade, switch back to one file per change.
 
 In the Supabase SQL editor, run in order:
 
@@ -53,10 +63,18 @@ In the Supabase SQL editor, run in order:
    movie plus the machine-translation cache: admins write, everyone
    reads), `movie_subtitles.detected_language` (what the auto-detector
    answered about each uploaded file — null until first use), and
-   `movie_subtitles.origin` (`upload` | `generated`, so the audio
-   scanner's results stay distinguishable from admin files). Every
-   statement is idempotent: pasting the file on a fresh project brings
-   it fully up to date, and re-running on a live one is safe.
+    `movie_subtitles.origin` (`upload` | `generated`, so the audio
+    scanner's results stay distinguishable from admin files), and the
+    ad cadence move (`ad_settings.mid_roll_interval_seconds` now
+    defaults to **600**: one ad per title every interval of wall-clock
+    time, persisted per title so the countdown keeps running while the
+    viewer is away), and
+    premium expiry (`profiles.premium_until` — one-time bank-transfer
+    payments grant a bounded window instead of lifetime premium, and
+    `public.is_premium()`, the My List quota, the admin counts and the
+    privilege guard all honour it). Every
+    statement is idempotent: pasting the file on a fresh project brings
+    it fully up to date, and re-running on a live one is safe.
 
 CLI alternative (project linked in `supabase/config.toml`): apply everything in
 one shot with
@@ -150,22 +168,54 @@ where id = (select id from auth.users where email = 'you@example.com');
 
 ### 7. Paystack premium checkout (optional)
 
-Premium purchases run through Paystack — cards, bank transfer and USSD all
-work in Nigeria without an international card. Until the secrets are set,
-the Upgrade row keeps its "Premium is coming soon" state.
+Premium purchases run through Paystack: the Profile tab shows a single
+**Ruxx Premium** row that opens a themed bottom sheet with the price broken
+out (₦1,500.00 subscription + ₦112.50 VAT (7.5%) = **₦1,612.50**/month) and
+two ways to pay:
 
-1. Create a monthly plan (₦1,500 / `150000` kobo) in the Paystack dashboard
-   or via the API; copy the plan code (`PLN_…`).
-2. Add a webhook endpoint in Paystack pointing at
+- **Pay with Card** — a subscription bound to the monthly plan, so it
+  renews automatically. Before opening Paystack, `checkout` pushes the
+  plan's amount up to the VAT-inclusive total (`PUT /plan` — Paystack
+  charges whatever the plan says and ignores the transaction's `amount`)
+  and restricts the page to the card channel, because renewals can only
+  draw on a stored card authorization.
+- **Pay with Bank Transfer** — a one-time Pay with Transfer charge for
+  the same VAT-inclusive total (card kept as a fallback channel). It
+  carries `metadata.premium_days = 30`, so `paystack-verify` /
+  `paystack-webhook` open `profiles.premium_until` for 30 days instead of
+  granting lifetime premium; every premium gate reads that window, and
+  `guard_profile_privileges` stops ordinary users from editing it.
+  Subscription grants clear the window again.
+
+**First-month promo:** a member who has never been charged (no
+`billing_customer_id`) gets the first month for **₦1,075.00** — the
+₦1,000.00 base plus the same 7.5% VAT (`PAYSTACK_PROMO_BASE_AMOUNT`) —
+on both buttons: a one-time charge (no plan) that buys the same 30-day
+window. Their next purchase falls back to the regular prices, since
+`checkout` re-checks eligibility server-side.
+
+Until the secrets are set, the row keeps its "Premium is coming soon"
+state.
+
+1. Create a monthly plan in the Paystack dashboard or via the API (any
+   starting amount works — checkout syncs it to ₦1,612.50 on first use);
+   copy the plan code (`PLN_…`).
+2. Enable **Pay with Transfer** in your Paystack dashboard settings, or the
+   Transfer option will not appear on checkout.
+3. Add a webhook endpoint in Paystack pointing at
    `https://YOUR_PROJECT_REF.supabase.co/functions/v1/paystack-webhook`
    (Paystack signs with your secret key — no separate signing secret).
-3. Give the functions their credentials (never put these in the app):
+   The function must keep `verify_jwt` off — Paystack never sends a
+   Supabase JWT, and late-confirming transfers depend on the webhook.
+4. Give the functions their credentials (never put these in the app):
 
 ```bash
 supabase secrets set \
   PAYSTACK_SECRET_KEY=sk_test_your_key \
   PAYSTACK_PLAN_CODE=PLN_your_plan \
   PAYSTACK_PLAN_AMOUNT=150000 \
+  PAYSTACK_PROMO_BASE_AMOUNT=100000 \
+  PAYSTACK_VAT_RATE=7.5 \
   PAYSTACK_PAYMENT_PAGE=https://paystack.shop/pay_your_slug
 ```
 
@@ -177,7 +227,9 @@ transaction directly. After the browser returns the app calls
 match), while `paystack-webhook` stays the source of truth — it verifies
 the `x-paystack-signature` HMAC, logs each raw payload once into
 `billing_events`, resolves the account by metadata, payer email, or stored
-customer code, and flips `profiles.is_premium` as the service role.
+customer code, and flips `profiles.is_premium` / `premium_until` as the
+service role. Bank transfers often confirm only after the browser has
+closed, so the webhook is what finishes those.
 
 Google Play / App Store in-app billing come later (Phases 12–13); their
 secret placeholders live in `.env.example` until the developer accounts
@@ -191,11 +243,13 @@ back to Paystack.
 | `npm start` | Expo dev server |
 | `npm run android` / `ios` / `web` | Run on a platform |
 | `npm run android:tv` | Android TV build (`EXPO_TV=1`) |
+| `npm run web:export` | Static web build into `dist/` (also the desktop app's bundle) |
+| `npm run desktop:start` | Run the Windows/macOS shell against `dist/` |
+| `npm run desktop:dist` | Build the desktop installers into `desktop/release/` |
 | `npm run lint` | ESLint |
 | `npm run typecheck` | `tsc --noEmit` (app + edge functions) |
 | `npm test` | `node --test` unit tests (SigV4 presigning, …) |
 | `node scripts/upload-whisper-model.mjs` | Push Whisper weights + ORT wasm into the model bucket |
-| `npx expo export --platform web` | Static PWA build into `dist/` |
 
 Native builds go through EAS (`eas build -p android --profile preview`, see
 `eas.json` — `android-tv` profile enables TV mode).
@@ -310,9 +364,16 @@ Pre-roll and mid-roll breaks both play everywhere:
 - **Web, Android TV and Expo Go** have no AdMob engine, so each break
   plays the in-app house overlay (countdown + skip). The "fail open"
   toggle only governs real AdMob request failures on native.
-- Mid-roll cues come from manual markers, the interval cadence, or — for
-  titles shorter than the interval — a single midpoint cue, so even
-  seconds-long test clips get a mid-roll.
+- **The Windows/macOS desktop app shows no ads at all.** It is a
+  premium-only surface: every placement is disabled in the shell
+  (`src/stores/adsConfig.ts`), and the Electron main process blocks ad
+  network requests outright — Google's AdSense policies allow its code on
+  websites only, so loading it inside an installed app would risk the
+  publisher account that monetizes the website.
+- Mid-rolls fire on a wall-clock cadence: one ad per title every
+  `mid_roll_interval_seconds` (default 600) of real time since the last ad,
+  persisted per title so leaving and returning inside the window plays with
+  no ads at all.
 
 ## Admin console
 
@@ -374,6 +435,33 @@ save, with live progress and a cancel button at every stage:
 - Web has no notification story — the row and the local notification are
   native-only.
 
+## Desktop app (Windows / macOS)
+
+`desktop/` wraps the same web export in Electron, so the installer users
+download is the app they already know from the browser — plus real offline
+downloads and auto-updates:
+
+- **Premium-only, ad-free** — free accounts browse the catalog, but Play
+  and Download open the Premium checkout (`useDesktopPremiumLock`); admins
+  bypass the gate. Every ad placement is disabled in the shell and ad
+  network requests are blocked in `desktop/main.js`.
+- **Offline downloads** work through the Electron main process
+  (`desktop/downloads.js`) in the same AES-256-GCM record format the mobile
+  apps use; the device master key lives in the OS keystore via
+  `safeStorage`. Manifest state stays in the renderer, entitlement still
+  goes through `download_grants`.
+- **Paystack checkout** opens in the user's default browser; the existing
+  verification polling unlocks Premium in the app once the webhook lands.
+- **Auto-updates** come from the site's `/downloads` folder
+  (electron-updater, generic feed). Installers ship **unsigned** for now:
+  Windows shows SmartScreen (More info → Run anyway), macOS needs
+  right-click → Open once.
+
+Build with `npm run web:export` then `npm run desktop:dist`, or let
+`.github/workflows/desktop.yml` build both platforms on a tag push.
+Release steps, signing notes and the ready-to-paste website download
+buttons live in `desktop/README.md` and `desktop/WEBSITE_LINKS.md`.
+
 ## Offline downloads
 
 Premium members can save **progressive files only** (mp4 / mov / m4v / webm /
@@ -383,8 +471,8 @@ revoked on failure or removal), while transfer state sits in a local manifest
 (AsyncStorage `ruxx.downloads.v1`) with files under
 `<documents>/ruxx-downloads/`.
 
-- Native only (iOS / Android / TV); the Downloads tab shows
-  "Available on mobile" on web.
+- Native (iOS / Android / TV) and the desktop app; a plain browser tab
+  shows "Available on mobile" on the Downloads tab.
 - The movie page's Download button shows live progress; cancel, retry and
   two-step delete live on the Downloads tab.
 - Playback prefers the local file over the network, never plays ads from a

@@ -3,79 +3,78 @@ import test from "node:test";
 
 import {
   AUTOSAVE_INTERVAL_SECONDS,
-  buildCuePoints,
+  DEFAULT_AD_INTERVAL_SECONDS,
+  adIsDue,
   closingMarginSeconds,
-  dueCuePoint,
   initialResumePosition,
   isCompleted,
+  parseAdClock,
   progressFraction,
   shouldAutosave,
 } from "./playback.ts";
 
-test("manual mid-roll markers win over the interval cadence", () => {
-  const points = buildCuePoints({
-    manualSeconds: [720, 360, 720],
-    runtimeSeconds: 888,
-    intervalSeconds: 300,
-  });
-  assert.deepEqual(points, [360, 720]);
+// ── Ad cadence: one ad per title every interval of wall-clock time ──────
+
+test("the default ad interval is ten minutes of wall-clock time", () => {
+  assert.equal(DEFAULT_AD_INTERVAL_SECONDS, 600);
 });
 
-test("interval cadence fills in when no manual markers exist", () => {
-  const points = buildCuePoints({
-    manualSeconds: [],
-    runtimeSeconds: 1000,
-    intervalSeconds: 300,
-  });
-  assert.deepEqual(points, [300, 600, 900]);
+test("a title with no ad history is due immediately", () => {
+  assert.equal(adIsDue(null, 1_000_000, 600), true);
 });
 
-test("cue points stay out of the final 30 seconds", () => {
-  const points = buildCuePoints({ manualSeconds: [360, 990], runtimeSeconds: 1000 });
-  assert.deepEqual(points, [360]);
-
-  const interval = buildCuePoints({ manualSeconds: [], runtimeSeconds: 620, intervalSeconds: 300 });
-  assert.deepEqual(interval, [300]);
+test("inside the window after an ad, nothing is due", () => {
+  const lastAd = 50_000_000;
+  assert.equal(adIsDue(lastAd, lastAd + 1_000, 600), false);
+  assert.equal(adIsDue(lastAd, lastAd + 599_000, 600), false);
 });
 
-test("disabled mid-rolls produce no cue points", () => {
-  assert.deepEqual(buildCuePoints({ manualSeconds: [360], runtimeSeconds: 900, midRollEnabled: false }), []);
+test("at exactly the interval the next ad is due", () => {
+  const lastAd = 50_000_000;
+  assert.equal(adIsDue(lastAd, lastAd + 600_000, 600), true);
+  assert.equal(adIsDue(lastAd, lastAd + 600_001, 600), true);
 });
 
-test("titles too short for the interval cadence get a midpoint cue", () => {
-  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: 120, intervalSeconds: 300 }), [60]);
-  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: 250, intervalSeconds: 300 }), [125]);
-  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: 30, intervalSeconds: 300 }), [15]);
-  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: 4, intervalSeconds: 300 }), [2]);
+test("leaving the player does not pause the countdown", () => {
+  // Ad shown, viewer leaves immediately and returns eight minutes later:
+  // still inside the window, so no ad.
+  const lastAd = 10_000_000;
+  assert.equal(adIsDue(lastAd, lastAd + 8 * 60_000, 600), false);
+  // Twelve minutes after the ad (four away, eight back), it is due.
+  assert.equal(adIsDue(lastAd, lastAd + 12 * 60_000, 600), true);
 });
 
-test("a marker inside the shrinking tail of a short title still yields the midpoint cue", () => {
-  assert.deepEqual(buildCuePoints({ manualSeconds: [50], runtimeSeconds: 60 }), [30]);
+test("an interval of zero or less still treats a stamp as due at 1s", () => {
+  const lastAd = 10_000_000;
+  assert.equal(adIsDue(lastAd, lastAd + 1_000, 0), true);
+  assert.equal(adIsDue(lastAd, lastAd + 500, -5), false);
 });
 
-test("one-second titles produce no mid-roll", () => {
-  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: 1, intervalSeconds: 300 }), []);
+test("corrupt stored stamps read as never-shown (=> due)", () => {
+  assert.equal(adIsDue(Number.NaN, 1_000, 600), true);
+  assert.equal(adIsDue(0, 1_000, 600), true);
+  assert.equal(adIsDue(-9, 1_000, 600), true);
 });
 
-test("unknown runtime keeps manual markers but skips the interval cadence", () => {
-  assert.deepEqual(buildCuePoints({ manualSeconds: [120], runtimeSeconds: null }), [120]);
-  assert.deepEqual(buildCuePoints({ manualSeconds: [], runtimeSeconds: null, intervalSeconds: 60 }), []);
+test("parseAdClock restores only sane stored values", () => {
+  assert.equal(parseAdClock("1728000000000"), 1728000000000);
+  assert.equal(parseAdClock(null), null);
+  assert.equal(parseAdClock(undefined), null);
+  assert.equal(parseAdClock(""), null);
+  assert.equal(parseAdClock("junk"), null);
+  assert.equal(parseAdClock("-5"), null);
+  assert.equal(parseAdClock("0"), null);
 });
 
-test("dueCuePoint fires once per marker and skips consumed cues", () => {
-  const cues = [300, 600];
-
-  assert.equal(dueCuePoint(cues, 100, 0), null);
-  assert.equal(dueCuePoint(cues, 305, 0), 300);
-
-  // Consumed => the same marker never fires twice...
-  assert.equal(dueCuePoint(cues, 310, 300), null);
-  // ...but the next one still can.
-  assert.equal(dueCuePoint(cues, 640, 300), 600);
-
-  // Resuming past a marker (lastConsumed >= cue) skips it entirely.
-  assert.equal(dueCuePoint(cues, 640, 640), null);
+test("an ad shown after the clock restarts the window from the new stamp", () => {
+  const first = 1_000_000;
+  const second = first + 700_000; // shown a bit late
+  assert.equal(adIsDue(first, first + 650_000, 600), true); // due before second
+  assert.equal(adIsDue(second, second + 100_000, 600), false); // fresh window
+  assert.equal(adIsDue(second, second + 600_000, 600), true); // due again
 });
+
+// ── Resume / save rules ─────────────────────────────────────────────────
 
 test("initialResumePosition honours thresholds and completion", () => {
   const base = { position_seconds: 0, duration_seconds: 900 };

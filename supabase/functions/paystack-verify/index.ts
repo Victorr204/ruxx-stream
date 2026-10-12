@@ -16,6 +16,7 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const PAYSTACK_SECRET_KEY = Deno.env.get("PAYSTACK_SECRET_KEY") ?? "";
 const PAYSTACK_PLAN_AMOUNT = Number(Deno.env.get("PAYSTACK_PLAN_AMOUNT") ?? "150000");
+const PAYSTACK_PROMO_BASE_AMOUNT = Number(Deno.env.get("PAYSTACK_PROMO_BASE_AMOUNT") ?? "100000");
 
 const PAYSTACK_API = "https://api.paystack.co";
 
@@ -24,7 +25,7 @@ type VerifyTransaction = {
   amount?: number;
   currency?: string;
   customer?: { customer_code?: string; email?: string } | string;
-  metadata?: { supabase_user_id?: string } | null;
+  metadata?: { supabase_user_id?: string; premium_days?: number; promo?: boolean } | null;
 };
 
 function customerCodeOf(customer: VerifyTransaction["customer"]): string | null {
@@ -100,10 +101,11 @@ Deno.serve(async (req) => {
     }
 
     const amount = Number(tx.amount ?? 0);
-    const paid =
-      tx.status === "success" &&
-      tx.currency === "NGN" &&
-      amount >= PAYSTACK_PLAN_AMOUNT;
+    // First-time promo charges sit below the plan price; metadata.promo is
+    // only ever written by checkout, so the lower floor (promo base, VAT is
+    // added at initialize) stays server-set.
+    const minAmount = tx.metadata?.promo === true ? PAYSTACK_PROMO_BASE_AMOUNT : PAYSTACK_PLAN_AMOUNT;
+    const paid = tx.status === "success" && tx.currency === "NGN" && amount >= minAmount;
 
     if (!paid) return json({ premium: false, status: tx.status ?? "unknown" });
 
@@ -113,7 +115,16 @@ Deno.serve(async (req) => {
     });
 
     const customerCode = customerCodeOf(tx.customer);
-    const update: Record<string, unknown> = { is_premium: true };
+    // One-time charges (bank transfer) carry a premium window; subscription
+    // charges clear any previous window so card members renew indefinitely.
+    const premiumDays = Number(tx.metadata?.premium_days ?? 0);
+    const update: Record<string, unknown> = {
+      is_premium: true,
+      premium_until:
+        premiumDays > 0
+          ? new Date(Date.now() + premiumDays * 86_400_000).toISOString()
+          : null,
+    };
     if (customerCode) update.billing_customer_id = customerCode;
     const { error: updateError } = await admin
       .from("profiles")

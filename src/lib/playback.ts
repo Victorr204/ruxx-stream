@@ -1,87 +1,39 @@
-// Pure playback math: ad cue points and resume/save rules. Kept dependency
-// free so node:test can cover it (src/lib/playback.test.mjs) — the player
-// screen imports these instead of reimplementing the rules inline.
+// Pure playback math: the wall-clock ad cadence and resume/save rules. Kept
+// dependency free so node:test can cover it (src/lib/playback.test.mjs) — the
+// player screen imports these instead of reimplementing the rules inline.
 
 export const RESUME_THRESHOLD_SECONDS = 10;
 export const END_MARGIN_SECONDS = 15;
 export const AUTOSAVE_INTERVAL_SECONDS = 10;
-/** No cue point may fire inside the final moments of a title. */
-export const MIN_TAIL_SECONDS = 30;
-/** Short titles shrink the tail (tail = min(MIN_TAIL, runtime * ratio)). */
-const SHORT_TAIL_RATIO = 0.25;
-/** After a cue fires it is ignored for this long (polling tolerance). */
-export const CUE_CONSUMED_TOLERANCE_SECONDS = 1;
 
-export type CuePointOptions = {
-  /** Manual markers from ad_markers (mid-roll). */
-  manualSeconds?: number[];
-  runtimeSeconds?: number | null;
-  /** Ad settings fallback cadence when no manual markers exist. */
-  intervalSeconds?: number;
-  midRollEnabled?: boolean;
-};
+// ── Ad cadence (wall clock) ──────────────────────────────────────────
+// One ad per title every intervalSeconds, measured from the moment an ad
+// was last shown. The clock keeps running while the viewer is away: leaving
+// the player and returning inside the window plays with no ads at all.
+
+/** Ten minutes of wall-clock time between ads on a title. */
+export const DEFAULT_AD_INTERVAL_SECONDS = 600;
 
 /**
- * Sorted mid-roll cue points.
- * - Disabled mid-rolls (or premium) => none.
- * - Manual markers always win; the interval cadence only fills in when the
- *   admin has not placed any markers for the title.
- * - Titles too short for the interval cadence get one midpoint cue instead,
- *   so seconds-long clips still get a mid-roll break.
- * - Nothing within the closing tail (scales down for short titles), and no
- *   runtime => manual only.
+ * True when an ad is due for a title: never any ad yet, or the last one is
+ * at least intervalSeconds ago. Callers disable the cadence entirely via the
+ * ad settings toggles instead of passing a zero/negative interval here.
  */
-export function buildCuePoints({
-  manualSeconds = [],
-  runtimeSeconds = null,
-  intervalSeconds = 300,
-  midRollEnabled = true,
-}: CuePointOptions): number[] {
-  if (!midRollEnabled) return [];
-
-  const hasRuntime = typeof runtimeSeconds === "number" && runtimeSeconds > 0;
-  const tail = hasRuntime
-    ? Math.min(MIN_TAIL_SECONDS, (runtimeSeconds as number) * SHORT_TAIL_RATIO)
-    : Infinity;
-  const cutoff = hasRuntime ? (runtimeSeconds as number) - tail : Infinity;
-
-  const manual = [
-    ...new Set(
-      manualSeconds.filter((s) => Number.isFinite(s) && s > 0 && s < cutoff)
-    ),
-  ].sort((a, b) => a - b);
-
-  if (manual.length > 0) return manual;
-  if (!hasRuntime || !Number.isFinite(cutoff) || intervalSeconds <= 0) return manual;
-
-  const points: number[] = [];
-  for (let t = intervalSeconds; t < cutoff; t += intervalSeconds) points.push(t);
-
-  if (points.length === 0) {
-    const mid = Math.floor((runtimeSeconds as number) / 2);
-    if (mid >= 1 && mid < cutoff) points.push(mid);
-  }
-  return points;
+export function adIsDue(
+  lastAdAtMs: number | null,
+  nowMs: number,
+  intervalSeconds: number
+): boolean {
+  if (lastAdAtMs === null) return true;
+  if (!Number.isFinite(lastAdAtMs) || lastAdAtMs <= 0) return true;
+  return nowMs - lastAdAtMs >= Math.max(1, intervalSeconds) * 1000;
 }
 
-/**
- * The next cue to fire for the current position, skipping anything already
- * consumed (before the resume point, behind a forward seek, or just played).
- */
-export function dueCuePoint(
-  cuePoints: number[],
-  position: number,
-  lastConsumedSeconds: number
-): number | null {
-  for (const cue of cuePoints) {
-    if (
-      cue > lastConsumedSeconds + CUE_CONSUMED_TOLERANCE_SECONDS &&
-      position >= cue
-    ) {
-      return cue;
-    }
-  }
-  return null;
+/** Restore a persisted ad-clock timestamp — junk or missing reads as null. */
+export function parseAdClock(raw: string | null | undefined): number | null {
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : null;
 }
 
 export type ProgressLike = {

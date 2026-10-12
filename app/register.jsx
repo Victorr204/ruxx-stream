@@ -21,6 +21,7 @@ import Animated, { FadeInDown, FadeIn, useSharedValue, useAnimatedStyle, withRep
 import { useTheme, GOLD, GOLD_GRADIENT } from "../context/ThemeContext";
 import AppAlert from "../utils/AppAlert";
 import { useAuthStore } from "../src/stores/auth";
+import { getSupabase } from "../src/lib/supabase";
 import Logos from "../assets/images/backlogo-transparent.png";
 
 const { width } = Dimensions.get("window");
@@ -110,6 +111,8 @@ export default function Register() {
   const [showPassword, setShowPassword] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "error" });
   const [gotoLogin, setGotoLogin] = useState(false);
+  const [awaitingVerify, setAwaitingVerify] = useState(false);
+  const [resending, setResending] = useState(false);
 
   const showAlert = (title, message, type = "error") => setAlert({ visible: true, title, message, type });
 
@@ -151,6 +154,7 @@ export default function Register() {
       return;
     }
     if (result.kind === "verify") {
+      setAwaitingVerify(true);
       setGotoLogin(true);
       showAlert(
         "Verify Your Email",
@@ -163,6 +167,26 @@ export default function Register() {
       router.replace("/home");
     } catch (_e) {
       // Auth guard may have already swapped the stack.
+    }
+  };
+
+  const handleResend = async () => {
+    if (resending || !email.trim()) {
+      showAlert("Enter Your Email", "Type your email above, then tap resend.", "error");
+      return;
+    }
+    setResending(true);
+    try {
+      const { error } = await getSupabase().auth.resend({ type: "signup", email: email.trim() });
+      if (error) {
+        showAlert("Resend Failed", error.message, "error");
+      } else {
+        showAlert("Email Sent", "We sent the verification link again — check your inbox.", "success");
+      }
+    } catch (e) {
+      showAlert("Resend Failed", e instanceof Error ? e.message : "Please try again.", "error");
+    } finally {
+      setResending(false);
     }
   };
 
@@ -264,8 +288,22 @@ export default function Register() {
                   {agreed && <Ionicons name="checkmark" size={14} color="#111" />}
                 </View>
                 <Text style={[styles.checkboxText, { color: theme.subtitle }]}>
-                  I agree to the <Text style={{ color: GOLD, fontWeight: "700" }}>Terms of Service</Text> and{" "}
-                  <Text style={{ color: GOLD, fontWeight: "700" }}>Privacy Policy</Text>
+                  I agree to the{" "}
+                  <Text
+                    style={{ color: GOLD, fontWeight: "700" }}
+                    onPress={() => router.push("/terms")}
+                    accessibilityRole="link"
+                  >
+                    Terms of Service
+                  </Text>{" "}
+                  and{" "}
+                  <Text
+                    style={{ color: GOLD, fontWeight: "700" }}
+                    onPress={() => router.push("/privacy")}
+                    accessibilityRole="link"
+                  >
+                    Privacy Policy
+                  </Text>
                 </Text>
               </TouchableOpacity>
 
@@ -292,6 +330,26 @@ export default function Register() {
                   )}
                 </LinearGradient>
               </TouchableOpacity>
+
+              {awaitingVerify ? (
+                <View style={[styles.resendCard, { borderColor: theme.inputBorder }]}>
+                  <Text style={[styles.resendText, { color: theme.subtitle }]}>
+                    Didn&apos;t get the verification email?
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.resendBtn, { borderColor: GOLD, opacity: resending ? 0.6 : 1 }]}
+                    onPress={handleResend}
+                    disabled={resending}
+                    activeOpacity={0.8}
+                  >
+                    {resending ? (
+                      <ActivityIndicator size="small" color={GOLD} />
+                    ) : (
+                      <Text style={[styles.resendBtnText, { color: GOLD }]}>Resend verification email</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              ) : null}
             </View>
 
             <Animated.View entering={FadeIn.delay(350).duration(500)} style={styles.loginRow} pointerEvents="box-none">
@@ -359,6 +417,9 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 4,
     zIndex: 1,
+    width: "100%",
+    maxWidth: 480,
+    alignSelf: "center",
   },
   cardTitle: { fontSize: 22, fontWeight: "800", marginBottom: 2 },
   cardSubtitle: { fontSize: 13.5, marginBottom: 16 },
@@ -420,4 +481,24 @@ const styles = StyleSheet.create({
   loginLink: { fontSize: 14, fontWeight: "800" },
 
   footer: { fontSize: 11, textAlign: "center", marginTop: 14 },
+
+  resendCard: {
+    marginTop: 14,
+    borderWidth: 1,
+    borderRadius: 13,
+    padding: 14,
+    gap: 10,
+    alignItems: "center",
+  },
+  resendText: { fontSize: 12.5, textAlign: "center" },
+  resendBtn: {
+    borderWidth: 1.5,
+    borderRadius: 11,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    minHeight: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  resendBtnText: { fontSize: 13, fontWeight: "800" },
 });

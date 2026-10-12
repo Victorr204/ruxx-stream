@@ -9,9 +9,13 @@ import CatalogPanel from "../../src/components/admin/CatalogPanel";
 import AdsPanel from "../../src/components/admin/AdsPanel";
 import GrantsPanel from "../../src/components/admin/GrantsPanel";
 import NotifyPanel from "../../src/components/admin/NotifyPanel";
+import AnalyticsPanel from "../../src/components/admin/AnalyticsPanel";
+import GenrePanel from "../../src/components/admin/GenrePanel";
 
 const SEGMENTS = [
   { key: "catalog", label: "Catalog", icon: "film-outline" },
+  { key: "stats", label: "Stats", icon: "stats-chart-outline" },
+  { key: "genres", label: "Genres", icon: "albums-outline" },
   { key: "ads", label: "Ads", icon: "megaphone-outline" },
   { key: "grants", label: "Grants", icon: "key-outline" },
   { key: "notify", label: "Notify", icon: "send-outline" },
@@ -83,6 +87,8 @@ export default function AdminConsole() {
 
       <View style={styles.panelWrap}>
         {segment === "catalog" ? <CatalogPanel /> : null}
+        {segment === "stats" ? <AnalyticsPanel /> : null}
+        {segment === "genres" ? <GenrePanel /> : null}
         {segment === "ads" ? <AdsPanel /> : null}
         {segment === "grants" ? <GrantsPanel /> : null}
         {segment === "notify" ? <NotifyPanel /> : null}

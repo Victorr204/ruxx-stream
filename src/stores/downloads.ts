@@ -33,6 +33,7 @@ import {
   type CipherInfo,
   type DownloadEntry,
 } from "../lib/downloads";
+import { desktopBridge } from "../lib/platform";
 import type { Movie } from "../lib/types";
 import { notifyDownloadReady } from "../lib/notifications";
 import { useAuthStore } from "./auth";
@@ -45,13 +46,25 @@ import { useAuthStore } from "./auth";
 // useless without the keystore. Playback decrypts to a transient copy that
 // is wiped when the player unmounts (expo-video cannot stream ciphertext).
 //
-// Web is unsupported: entry points gate on Platform.OS and the actions below
-// no-op / report "unsupported".
+// The Windows/macOS desktop shell takes the same path with its own IO: the
+// Electron main process streams + seals (src/lib/crypto.ts' record format,
+// reimplemented with Node crypto in desktop/downloads.js) and hands back
+// the same cipher metadata; the master key lives in Electron safeStorage.
+// Files and manifests there are still premium-only, like everywhere else.
+//
+// Plain web (a browser tab) is unsupported: entry points gate on
+// Platform.OS and the actions below no-op / report "unsupported".
 
 const MANIFEST_KEY = "ruxx.downloads.v1";
 const DIR_NAME = "ruxx-downloads";
 const MASTER_KEY_ALIAS = "ruxx.stream.filekey.v1";
 const PROGRESS_THROTTLE_MS = 250;
+/** Manifest placeholder URI for a sealed desktop file (real IO is in main). */
+const DESKTOP_ENTRY_SCHEME = "ruxx-offline";
+
+function desktopEntryUri(movieId: string): string {
+  return `${DESKTOP_ENTRY_SCHEME}://${movieId}.enc`;
+}
 
 export type StartDownloadResult =
   | { ok: true }
@@ -72,6 +85,7 @@ type DownloadsState = {
   entries: Record<string, DownloadEntry>;
   initialized: boolean;
   initialize: () => Promise<void>;
+  reset: () => void;
   startDownload: (movie: Movie) => Promise<StartDownloadResult>;
   cancelDownload: (movieId: string) => Promise<void>;
   removeDownload: (movieId: string) => Promise<void>;
@@ -85,6 +99,8 @@ type DownloadsState = {
 
 /** In-flight transfers; not reactive state (progress flows through patch()). */
 const activeTasks = new Map<string, DownloadTask>();
+/** Desktop shell: one progress-listener unsubscribe per in-flight title. */
+const desktopProgressUnsubs = new Map<string, () => void>();
 /** Set when the user cancels/removes while a startDownload is between awaits. */
 const cancelRequests = new Set<string>();
 /** Serialises manifest writes so concurrent patches never clobber each other. */
@@ -125,6 +141,17 @@ function deleteEntryFiles(movieId: string, entry: DownloadEntry | undefined): vo
   deleteQuietly(downloadsFile(movieId, entry.ext));
   deleteQuietly(encryptedFile(movieId));
   deleteQuietly(playbackFile(movieId, entry.ext));
+}
+
+/** Desktop shell: drop the progress listener and the sealed file on disk. */
+function removeDesktopFiles(movieId: string): void {
+  const bridge = desktopBridge();
+  desktopProgressUnsubs.get(movieId)?.();
+  desktopProgressUnsubs.delete(movieId);
+  if (!bridge) return;
+  bridge.downloads.remove(movieId).catch((e) =>
+    console.warn("[downloads] desktop remove failed", e)
+  );
 }
 
 function friendlyError(error: unknown): string {
@@ -280,9 +307,20 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
     entries: {},
     initialized: false,
 
+    // Sign-out / account switch: drop the in-memory manifest so the next
+    // account never inherits the previous user's offline downloads.
+    reset: () => {
+      activeTasks.clear();
+      cancelRequests.clear();
+      for (const unsubscribe of desktopProgressUnsubs.values()) unsubscribe();
+      desktopProgressUnsubs.clear();
+      set({ entries: {}, initialized: false });
+    },
+
     initialize: async () => {
       if (get().initialized) return;
-      if (Platform.OS === "web") {
+      const bridge = desktopBridge();
+      if (Platform.OS === "web" && !bridge) {
         set({ initialized: true });
         return;
       }
@@ -291,22 +329,34 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
         let entries: Record<string, DownloadEntry> = {};
         if (raw) entries = JSON.parse(raw) as Record<string, DownloadEntry>;
 
-        entries = reconcileManifest(entries, (id) => {
-          const entry = entries[id];
-          if (!entry) return false;
-          if (entry.state !== "ready") return true; // retryable, no file required
-          try {
-            return !!entry.uri && new File(entry.uri).exists;
-          } catch {
-            return false;
-          }
-        });
+        if (bridge) {
+          // Desktop shell: files live outside the renderer, so the main
+          // process answers which sealed files are still on disk.
+          const ids = Object.keys(entries).filter((id) => entries[id]?.movieId === id);
+          const existing = new Set(await bridge.downloads.listExists(ids));
+          entries = reconcileManifest(entries, (id) => existing.has(id));
+        } else {
+          entries = reconcileManifest(entries, (id) => {
+            const entry = entries[id];
+            if (!entry) return false;
+            if (entry.state !== "ready") return true; // retryable, no file required
+            try {
+              return !!entry.uri && new File(entry.uri).exists;
+            } catch {
+              return false;
+            }
+          });
+        }
         entries = resetInterrupted(entries);
 
         // Cold start: no player is alive, so any decrypted copy is a stray.
         for (const [id, entry] of Object.entries(entries)) {
           if (!entry.plainUri) continue;
-          deleteQuietly(playbackFile(id, entry.ext));
+          if (bridge) {
+            bridge.downloads.releasePlayback(id).catch(() => {});
+          } else {
+            deleteQuietly(playbackFile(id, entry.ext));
+          }
           entries = { ...entries, [id]: { ...entry, plainUri: null } };
         }
 
@@ -319,7 +369,8 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
     },
 
     startDownload: async (movie) => {
-      if (Platform.OS === "web") return { ok: false, reason: "unsupported" };
+      const bridge = desktopBridge();
+      if (Platform.OS === "web" && !bridge) return { ok: false, reason: "unsupported" };
 
       cancelRequests.delete(movie.id);
       const existing = get().entries[movie.id];
@@ -352,9 +403,11 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
       }
 
       // A failed seal keeps completed plaintext (bytesDone === totalBytes):
-      // re-seal it instead of spending the user's bandwidth again.
+      // re-seal it instead of spending the user's bandwidth again. (Native
+      // only — the desktop shell seals in main and keeps no plaintext.)
       const current = get().entries[movie.id];
       const reusable =
+        !bridge &&
         current &&
         current.state === "failed" &&
         !current.cipher &&
@@ -403,6 +456,78 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
         },
       });
       persist(get().entries);
+
+      // Desktop shell: the Electron main process owns the transfer + seal
+      // (Node fs streaming, master key in safeStorage). Progress arrives
+      // over IPC; the renderer only tracks manifest state, like native.
+      if (bridge) {
+        const unsubscribe = bridge.downloads.onProgress((progress) => {
+          if (progress.movieId !== movie.id) return;
+          const entry = get().entries[movie.id];
+          if (!entry) return;
+          const now = Date.now();
+          if (now - Date.parse(entry.updatedAt) < PROGRESS_THROTTLE_MS) return;
+          patch(movie.id, {
+            bytesDone: progress.bytesDone,
+            totalBytes: progress.totalBytes,
+            progress:
+              progress.totalBytes > 0
+                ? Math.min(1, progress.bytesDone / progress.totalBytes)
+                : 0,
+          });
+        });
+        desktopProgressUnsubs.set(movie.id, unsubscribe);
+        try {
+          const result = await bridge.downloads.start(movie.id, source.url);
+          unsubscribe();
+          desktopProgressUnsubs.delete(movie.id);
+
+          if (!get().entries[movie.id]) {
+            // Removed/cancelled while finishing — clear whatever landed.
+            removeDesktopFiles(movie.id);
+            void revokeDownload(movie.id);
+            return { ok: false, reason: "cancelled" };
+          }
+          if (!result.ok) {
+            removeDesktopFiles(movie.id);
+            patch(movie.id, {
+              state: "failed",
+              error: result.code === "http" ? "Download failed" : (result.message ?? "Download failed"),
+            });
+            void revokeDownload(movie.id);
+            return {
+              ok: false,
+              reason: result.code === "cancelled" ? "cancelled" : "error",
+              message: result.message,
+            };
+          }
+
+          patch(movie.id, {
+            state: "ready",
+            progress: 1,
+            bytesDone: result.plainBytes,
+            totalBytes: result.plainBytes,
+            fileSizeBytes: result.plainBytes,
+            uri: desktopEntryUri(movie.id),
+            encrypted: true,
+            cipher: { key: result.cipherKey, nonce: result.cipherNonce },
+            plainUri: null,
+            error: null,
+          });
+          return { ok: true };
+        } catch (e) {
+          unsubscribe();
+          desktopProgressUnsubs.delete(movie.id);
+          const failedEntry = get().entries[movie.id];
+          if (!failedEntry) {
+            removeDesktopFiles(movie.id);
+            return { ok: false, reason: "cancelled" };
+          }
+          patch(movie.id, { state: "failed", error: friendlyError(e) });
+          void revokeDownload(movie.id);
+          return { ok: false, reason: "error", message: friendlyError(e) };
+        }
+      }
 
       try {
         downloadsDirectory().create({ idempotent: true });
@@ -471,6 +596,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
 
     cancelDownload: async (movieId) => {
       cancelRequests.add(movieId);
+      const bridge = desktopBridge();
       const entry = get().entries[movieId];
 
       const task = activeTasks.get(movieId);
@@ -482,8 +608,21 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
           console.warn("[downloads] cancel failed", e);
         }
       }
+      if (bridge) {
+        desktopProgressUnsubs.get(movieId)?.();
+        desktopProgressUnsubs.delete(movieId);
+        try {
+          bridge.downloads.cancel(movieId);
+        } catch (e) {
+          console.warn("[downloads] desktop cancel failed", e);
+        }
+      }
       if (entry && (entry.state === "downloading" || entry.state === "encrypting")) {
-        deleteEntryFiles(movieId, entry);
+        if (bridge) {
+          bridge.downloads.remove(movieId).catch(() => {});
+        } else {
+          deleteEntryFiles(movieId, entry);
+        }
         const entries = { ...get().entries };
         delete entries[movieId];
         set({ entries });
@@ -494,6 +633,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
 
     removeDownload: async (movieId) => {
       cancelRequests.add(movieId);
+      const bridge = desktopBridge();
       const entry = get().entries[movieId];
 
       const task = activeTasks.get(movieId);
@@ -505,7 +645,11 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
           console.warn("[downloads] cancel failed", e);
         }
       }
-      deleteEntryFiles(movieId, entry);
+      if (bridge) {
+        removeDesktopFiles(movieId);
+      } else {
+        deleteEntryFiles(movieId, entry);
+      }
 
       const entries = { ...get().entries };
       delete entries[movieId];
@@ -522,6 +666,25 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
     getEntry: (movieId) => get().entries[movieId],
 
     prepareLocalPlayback: async (movieId) => {
+      const bridge = desktopBridge();
+      if (bridge) {
+        // Desktop shell: main decrypts to a transient copy and returns a
+        // media:// URL the <video> element can play through app://.
+        const entry = get().entries[movieId];
+        if (!entry || entry.state !== "ready" || !entry.uri) return null;
+        if (!entry.cipher) return null; // sealed-only format on desktop
+        const playUrl = await bridge.downloads.preparePlayback(movieId, entry.ext, {
+          key: entry.cipher.key,
+          nonce: entry.cipher.nonce,
+          plainBytes: entry.fileSizeBytes,
+        });
+        if (!get().entries[movieId]) {
+          if (playUrl) bridge.downloads.releasePlayback(movieId).catch(() => {});
+          return null;
+        }
+        if (playUrl) patch(movieId, { plainUri: playUrl });
+        return playUrl;
+      }
       if (Platform.OS === "web") return null;
       const entry = get().entries[movieId];
       if (!entry || entry.state !== "ready" || !entry.uri) return null;
@@ -558,6 +721,14 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => {
     },
 
     releaseLocalPlayback: async (movieId) => {
+      const bridge = desktopBridge();
+      if (bridge) {
+        const entry = get().entries[movieId];
+        if (!entry?.plainUri) return;
+        await bridge.downloads.releasePlayback(movieId);
+        if (get().entries[movieId]) patch(movieId, { plainUri: null });
+        return;
+      }
       const entry = get().entries[movieId];
       if (!entry?.plainUri) return;
       deleteQuietly(playbackFile(movieId, entry.ext));

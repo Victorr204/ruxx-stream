@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GOLD } from "../../context/ThemeContext";
+import AdSenseAd from "./AdSenseAd";
 
 // Full-screen in-app ad break used when AdMob can't serve: web, TV, missing
 // unit ids, or a failed request with fail_open=false. Mimics a real break:
-// countdown, then a skip button after the first few seconds.
+// countdown, then a skip button after the first few seconds. On web the card
+// area can carry a real AdSense display unit (adsenseSlot).
 
 const DEFAULT_DURATION_SECONDS = 12;
 const SKIP_AFTER_SECONDS = 5;
@@ -14,9 +16,13 @@ export type AdOverlayProps = {
   placement: "pre_roll" | "mid_roll";
   durationSeconds?: number;
   onFinished: (status: "completed" | "skipped") => void;
+  /** Opens the Premium sheet — wired by the player so the CTA sells. */
+  onPremium?: () => void;
+  /** AdSense slot id (web only) — renders a live display unit above the card. */
+  adsenseSlot?: string;
 };
 
-export function AdOverlay({ placement, durationSeconds, onFinished }: AdOverlayProps) {
+export function AdOverlay({ placement, durationSeconds, onFinished, onPremium, adsenseSlot }: AdOverlayProps) {
   const total = durationSeconds ?? DEFAULT_DURATION_SECONDS;
   const [remaining, setRemaining] = useState(total);
   const finishedRef = useRef(false);
@@ -51,6 +57,12 @@ export function AdOverlay({ placement, durationSeconds, onFinished }: AdOverlayP
         {placement === "pre_roll" ? "AD · BEFORE PLAY" : "AD · BREAK"}
       </Text>
 
+      {adsenseSlot ? (
+        <View style={styles.adUnitWrap}>
+          <AdSenseAd slot={adsenseSlot} format="rectangle" minHeight={250} style={styles.adUnit} />
+        </View>
+      ) : null}
+
       <View style={styles.card}>
         <View style={styles.logoBadge}>
           <Text style={styles.logoText}>ruxx</Text>
@@ -59,10 +71,23 @@ export function AdOverlay({ placement, durationSeconds, onFinished }: AdOverlayP
         <Text style={styles.sub}>
           Premium removes every ad and unlocks offline downloads.
         </Text>
-        <View style={styles.ctaPill}>
-          <Ionicons name="sparkles" size={13} color="#0a0a0a" />
-          <Text style={styles.ctaText}>Go Premium</Text>
-        </View>
+        {onPremium ? (
+          <TouchableOpacity
+            style={styles.ctaPill}
+            onPress={onPremium}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Go Premium"
+          >
+            <Ionicons name="sparkles" size={13} color="#0a0a0a" />
+            <Text style={styles.ctaText}>Go Premium</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.ctaPill}>
+            <Ionicons name="sparkles" size={13} color="#0a0a0a" />
+            <Text style={styles.ctaText}>Go Premium</Text>
+          </View>
+        )}
       </View>
 
       <View style={styles.footer}>
@@ -103,6 +128,13 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 2,
   },
+  adUnitWrap: {
+    width: "100%",
+    maxWidth: 420,
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  adUnit: { width: "100%", borderRadius: 12, overflow: "hidden" },
   card: {
     alignItems: "center",
     gap: 12,

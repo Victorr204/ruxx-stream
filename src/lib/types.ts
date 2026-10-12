@@ -4,6 +4,8 @@ export type Profile = {
   avatar_url: string | null;
   role: "user" | "admin";
   is_premium: boolean;
+  premium_until: string | null;
+  billing_customer_id: string | null;
   created_at: string;
   updated_at: string;
 };

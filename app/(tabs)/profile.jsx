@@ -8,19 +8,21 @@ import {
   ScrollView,
   ActivityIndicator,
   Platform,
-  Switch,
+  Alert,
+  Linking,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useLocalSearchParams } from "expo-router";
-import * as WebBrowser from "expo-web-browser";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useTheme, GOLD, GOLD_GRADIENT } from "../../context/ThemeContext";
 import AppAlert from "../../utils/AppAlert";
 import { useAuthStore } from "../../src/stores/auth";
+import { useIsDesktop, CONTENT_MAX_WIDTH } from "../../src/hooks/useIsDesktop";
 import { getSupabase } from "../../src/lib/supabase";
-import { checkoutRedirectUrl, startCheckout, verifyCheckout } from "../../src/lib/api";
+import { usePremiumCheckout } from "../../src/hooks/usePremiumCheckout";
+import PremiumSheet from "../../src/components/PremiumSheet";
 import {
   notificationPermissionGranted,
   registerForPush,
@@ -33,16 +35,12 @@ function initialsFor(name, email) {
   return (parts[0]?.[0] ?? "").toUpperCase() + (parts[1]?.[0] ?? "").toUpperCase();
 }
 
-/** Reads `key` out of a possibly deep-link URL; returns "" when absent. */
-function queryParam(url, key) {
-  if (!url) return "";
-  const match = url.match(new RegExp(`[?&]${key}=([^&#]*)`));
-  return match ? decodeURIComponent(match[1]) : "";
-}
-
-// One verification per reference across every entry point (auth-session
-// return, cold-start deep link, web full-page redirect).
-let verifiedWebReference = "";
+const SUPPORT_EMAIL = "support@ruxxdigital.name.ng";
+const THEME_OPTIONS = [
+  { key: "dark", label: "Dark", icon: "moon-outline" },
+  { key: "light", label: "Light", icon: "sunny-outline" },
+  { key: "system", label: "System", icon: "phone-portrait-outline" },
+];
 
 function StatCard({ label, value }) {
   const { theme } = useTheme();
@@ -91,18 +89,19 @@ function Row({ icon, label, value, onPress, right, danger }) {
 }
 
 export default function Profile() {
-  const { theme, resolved, setMode } = useTheme();
+  const { theme, mode, setMode } = useTheme();
   const profile = useAuthStore((s) => s.profile);
   const session = useAuthStore((s) => s.session);
   const signOut = useAuthStore((s) => s.signOut);
   const refreshProfile = useAuthStore((s) => s.refreshProfile);
   const sendPasswordReset = useAuthStore((s) => s.sendPasswordReset);
+  const isDesktop = useIsDesktop();
 
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [upgrading, setUpgrading] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [notifGranted, setNotifGranted] = useState(false);
   const [notifBusy, setNotifBusy] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
@@ -120,108 +119,18 @@ export default function Profile() {
   }, []);
 
   const showAlert = useCallback(
-    (title, message, type = "info") => setAlert({ visible: true, title, message, type }),
+    (title, message, type = "info", accent) =>
+      setAlert({ visible: true, title, message, type, accent }),
     []
   );
 
-  const announcePremium = useCallback(
-    () =>
-      showAlert("Welcome to Premium", "Ad-free streaming and offline downloads are unlocked.", "success"),
+  // Checkout (Paystack) flow lives in the shared hook — Profile only
+  // decides how its alerts are rendered (gold-accented AppAlert above).
+  const notify = useCallback(
+    (title, message, type = "info", accent) => showAlert(title, message, type, accent),
     [showAlert]
   );
-
-  // Web returns from Paystack by navigating this route with ?reference=…
-  // (full-page redirect). Confirm it once; premium lands instantly.
-  useEffect(() => {
-    const ref = Array.isArray(referenceParam) ? referenceParam[0] : referenceParam;
-    if (!ref || ref === verifiedWebReference) return undefined;
-    verifiedWebReference = ref;
-    let cancelled = false;
-    verifyCheckout(ref).then((verification) => {
-      if (cancelled) return;
-      if (verification.premium) {
-        refreshProfile().then(() => {
-          if (!cancelled) announcePremium();
-        });
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [referenceParam, refreshProfile, announcePremium]);
-
-  const handleUpgrade = async () => {
-    if (upgrading) return;
-    setUpgrading(true);
-    try {
-      const result = await startCheckout();
-      if (!result.url) {
-        if (result.reason === "not-configured") {
-          showAlert(
-            "Premium is Coming Soon",
-            "The Premium plan will unlock ad-free streaming and offline downloads. Stay tuned!",
-            "info"
-          );
-        } else if (result.reason === "already-premium") {
-          await refreshProfile();
-          announcePremium();
-        } else {
-          showAlert("Checkout Failed", result.message || "Please try again later.", "error");
-        }
-        return;
-      }
-
-      const redirectUrl = checkoutRedirectUrl();
-      const outcome = await WebBrowser.openAuthSessionAsync(result.url, redirectUrl);
-      const returnedUrl = outcome.type === "success" && typeof outcome.url === "string" ? outcome.url : "";
-      const reference = queryParam(returnedUrl, "reference");
-      if (reference) {
-        verifiedWebReference = reference;
-        const verification = await verifyCheckout(reference);
-        if (verification.premium) {
-          await refreshProfile();
-          announcePremium();
-          return;
-        }
-        if (verification.status === "failed" || verification.status === "abandoned") {
-          showAlert(
-            "Payment Not Completed",
-            "You were not charged. Tap Upgrade again when you're ready.",
-            "error"
-          );
-          return;
-        }
-      }
-      await refreshProfile();
-      if (useAuthStore.getState().profile?.is_premium) {
-        announcePremium();
-        return;
-      }
-      // Payment-page flow returns no reference (the browser is closed on
-      // dismiss) — the webhook grants within seconds of a successful charge,
-      // so poll briefly either way before giving up.
-      const dismissed = outcome.type !== "success";
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        await refreshProfile();
-        if (useAuthStore.getState().profile?.is_premium) {
-          announcePremium();
-          return;
-        }
-      }
-      showAlert(
-        "Payment Processing",
-        dismissed
-          ? "If your payment went through, Premium activates within a minute — reopen Profile to see it."
-          : "Your payment is being confirmed. Premium activates within a minute — reopen Profile to see it.",
-        "info"
-      );
-    } catch (e) {
-      showAlert("Checkout Failed", e instanceof Error ? e.message : "Please try again later.", "error");
-    } finally {
-      setUpgrading(false);
-    }
-  };
+  const checkout = usePremiumCheckout(notify, referenceParam);
 
   const displayName = profile?.display_name || session?.user?.user_metadata?.display_name || "";
   const email = session?.user?.email ?? "";
@@ -272,6 +181,78 @@ export default function Profile() {
     showAlert("Check Your Email", "A password reset link is on its way to your inbox.", "success");
   };
 
+  const handleRestore = async () => {
+    if (restoring) return;
+    setRestoring(true);
+    try {
+      const { data, error } = await getSupabase().functions.invoke("restore-purchases");
+      if (error) throw error;
+      await refreshProfile();
+      if (data?.premium && data?.status !== "already") {
+        notify("Purchases Restored", "Your Ruxx Premium access is active again.", "success", "gold");
+      } else if (data?.status === "already") {
+        notify("Already Active", "Your subscription is already active on this account.", "success", "gold");
+      } else {
+        notify(
+          "No Purchase Found",
+          "We couldn't find a recent payment on this account. Contact support if you were charged.",
+          "error"
+        );
+      }
+    } catch (e) {
+      notify(
+        "Restore Failed",
+        e instanceof Error ? e.message : "Could not restore purchases right now.",
+        "error"
+      );
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  const handleSupport = () => {
+    Linking.openURL(
+      `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("ruxx stream support")}`
+    ).catch(() => {
+      showAlert("Email Unavailable", "No mail app is set up on this device.", "error");
+    });
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      "Delete Account",
+      "This permanently removes your account, watch history and lists. This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            setBusy(true);
+            try {
+              const { error } = await getSupabase().functions.invoke("delete-account");
+              if (error) throw error;
+            } catch (e) {
+              showAlert(
+                "Delete Failed",
+                e instanceof Error ? e.message : "Could not delete the account right now.",
+                "error"
+              );
+            } finally {
+              setBusy(false);
+            }
+            await signOut();
+            try {
+              router.replace("/login");
+            } catch (_e) {
+              // Guard already redirected.
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleEnableNotifications = async () => {
     if (notifBusy) return;
     if (notifGranted) {
@@ -312,12 +293,20 @@ export default function Profile() {
         title={alert.title}
         message={alert.message}
         type={alert.type}
+        accent={alert.accent}
         theme={theme}
         onClose={() => setAlert((a) => ({ ...a, visible: false }))}
       />
+      <PremiumSheet
+        visible={checkout.premiumModal}
+        firstTime={checkout.firstTime}
+        upgrading={checkout.upgrading}
+        onCheckout={checkout.handleUpgrade}
+        onClose={checkout.closePremium}
+      />
 
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        <Animated.Text entering={FadeInDown.duration(400)} style={[styles.header, { color: theme.text }]}>
+      <ScrollView contentContainerStyle={[styles.scroll, isDesktop && styles.scrollWide]} showsVerticalScrollIndicator={false}>
+        <Animated.Text entering={FadeInDown.duration(400)} style={[styles.header, { color: theme.text }, isDesktop && styles.headerWide]}>
           Profile
         </Animated.Text>
 
@@ -442,21 +431,27 @@ export default function Profile() {
           Appearance
         </Animated.Text>
         <Animated.View entering={FadeInDown.delay(350).duration(450)} style={{ gap: 10 }}>
-          <Row
-            icon={resolved === "dark" ? "moon" : "sunny"}
-            label="Dark mode"
-            value={resolved === "dark" ? "Dark theme" : "Light theme"}
-            right={
-              <Switch
-                value={resolved === "dark"}
-                onValueChange={(next) => setMode(next ? "dark" : "light")}
-                trackColor={{ false: "#c9c9c9", true: GOLD }}
-                thumbColor={resolved === "dark" ? "#141414" : "#f6f6f6"}
-                ios_backgroundColor="#c9c9c9"
-                accessibilityLabel="Dark mode"
-              />
-            }
-          />
+          <View style={[styles.themeRow, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            {THEME_OPTIONS.map((option) => {
+              const active = mode === option.key;
+              return (
+                <TouchableOpacity
+                  key={option.key}
+                  style={[styles.themeChip, active && { backgroundColor: GOLD }]}
+                  onPress={() => setMode(option.key)}
+                  activeOpacity={0.8}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`Theme: ${option.label}`}
+                >
+                  <Ionicons name={option.icon} size={14} color={active ? "#111" : theme.subtitle} />
+                  <Text style={[styles.themeChipText, { color: active ? "#111" : theme.subtitle }]}>
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </Animated.View>
 
         {/* ── Membership ── */}
@@ -465,17 +460,53 @@ export default function Profile() {
         </Animated.Text>
         <Animated.View entering={FadeInDown.delay(430).duration(450)} style={{ gap: 10 }}>
           <Row
-            icon="star-outline"
-            label={isPremium ? "Premium active" : "Upgrade to Premium"}
-            value={isPremium ? "Ad-free streams + offline downloads" : "Ad-free streams, downloads & more"}
-            onPress={isPremium ? undefined : handleUpgrade}
-            right={upgrading ? <ActivityIndicator size="small" color={GOLD} /> : undefined}
+            icon="diamond-outline"
+            label={isPremium ? "Premium active" : "Ruxx Premium"}
+            value={
+              isPremium
+                ? "Ad-free streams + offline downloads"
+                : checkout.firstTime
+                  ? "First month ₦1,075 incl. VAT — then ₦1,612.50/month"
+                  : "₦1,500 + 7.5% VAT = ₦1,612.50/month"
+            }
+            onPress={isPremium ? undefined : checkout.openPremium}
+            right={checkout.upgrading ? <ActivityIndicator size="small" color={GOLD} /> : undefined}
+          />
+          {!isPremium && (
+            <Row
+              icon="refresh-outline"
+              label={restoring ? "Restoring purchases…" : "Restore purchases"}
+              value="Re-check a previous payment on this account"
+              onPress={restoring ? undefined : handleRestore}
+              right={restoring ? <ActivityIndicator size="small" color={GOLD} /> : undefined}
+            />
+          )}
+        </Animated.View>
+
+        {/* ── Support ── */}
+        <Animated.Text entering={FadeInDown.delay(455).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }]}>
+          Support
+        </Animated.Text>
+        <Animated.View entering={FadeInDown.delay(470).duration(450)} style={{ gap: 10 }}>
+          <Row
+            icon="mail-outline"
+            label="Contact support"
+            value={SUPPORT_EMAIL}
+            onPress={handleSupport}
+          />
+          <Row
+            icon="trash-outline"
+            label={busy ? "Deleting account…" : "Delete account"}
+            value="Permanently remove your account and data"
+            onPress={busy ? undefined : handleDeleteAccount}
+            danger
+            right={busy ? <ActivityIndicator size="small" color="#ef4444" /> : undefined}
           />
         </Animated.View>
 
         {/* ── Admin ── */}
         {isAdmin && (
-          <Animated.View entering={FadeInDown.delay(460).duration(450)} style={{ gap: 10 }}>
+          <Animated.View entering={FadeInDown.delay(490).duration(450)} style={{ gap: 10 }}>
             <Row
               icon="shield-checkmark-outline"
               label="Admin console"
@@ -486,7 +517,7 @@ export default function Profile() {
         )}
 
         {/* ── Sign out ── */}
-        <Animated.View entering={FadeInDown.delay(490).duration(450)} style={styles.signOutWrap}>
+        <Animated.View entering={FadeInDown.delay(520).duration(450)} style={styles.signOutWrap}>
           <TouchableOpacity style={styles.signOutBtn} onPress={handleSignOut} activeOpacity={0.8}>
             <Ionicons name="log-out-outline" size={18} color="#ef4444" />
             <Text style={styles.signOutText}>Sign Out</Text>
@@ -501,8 +532,10 @@ export default function Profile() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   scroll: { padding: 20, paddingBottom: 40, gap: 14 },
+  scrollWide: { padding: 32, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
 
   header: { fontSize: 28, fontWeight: "900", letterSpacing: -0.5, marginBottom: 2 },
+  headerWide: { fontSize: 32 },
 
   identity: {
     borderRadius: 22,
@@ -625,4 +658,22 @@ const styles = StyleSheet.create({
   },
   signOutText: { fontSize: 15, fontWeight: "800", color: "#ef4444" },
   version: { fontSize: 11, textAlign: "center" },
+
+  themeRow: {
+    flexDirection: "row",
+    gap: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 5,
+  },
+  themeChip: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  themeChipText: { fontSize: 12, fontWeight: "800" },
 });

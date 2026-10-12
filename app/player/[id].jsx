@@ -24,8 +24,10 @@ import { useAuthStore } from "../../src/stores/auth";
 import { useDownloadsStore } from "../../src/stores/downloads";
 import { useAdsConfig } from "../../src/stores/adsConfig";
 import { useMovie } from "../../src/hooks/useMovies";
+import { useIsDesktop } from "../../src/hooks/useIsDesktop";
+import { useDesktopPremiumLock } from "../../src/hooks/useDesktopPremiumLock";
+import { isDesktopShell } from "../../src/lib/platform";
 import {
-  fetchAdMarkers,
   fetchSubtitleCues,
   fetchWatchProgress,
   logAdEvent,
@@ -38,14 +40,18 @@ import { formatMeta } from "../../src/lib/format";
 import { qualityLabel } from "../../src/lib/quality";
 import {
   RESUME_THRESHOLD_SECONDS,
-  buildCuePoints,
-  dueCuePoint,
+  adIsDue,
   initialResumePosition,
   isCompleted,
+  parseAdClock,
   shouldAutosave,
 } from "../../src/lib/playback";
 import { canUseNativeAds, showNativeInterstitial } from "../../src/lib/ads";
+import { ADSENSE_INTERSTITIAL_SLOT } from "../../src/lib/adsense";
 import { AdOverlay } from "../../src/components/AdOverlay";
+import PremiumSheet from "../../src/components/PremiumSheet";
+import AppAlert from "../../utils/AppAlert";
+import { usePremiumCheckout } from "../../src/hooks/usePremiumCheckout";
 import { IDLE_QUALITY, PlayerEngine } from "../../src/components/PlayerEngine";
 import QualitySheet from "../../src/components/QualitySheet";
 import SpeedSheet from "../../src/components/SpeedSheet";
@@ -53,19 +59,32 @@ import SubtitleSheet from "../../src/components/SubtitleSheet";
 import ScanEngine from "../../src/components/ScanEngine";
 
 // Playback screen: resolves a playable URL + resume point, runs ad breaks
-// (AdMob interstitial natively, house overlay on web/TV/failure), schedules
-// mid-rolls from admin markers/interval, and keeps watch_progress fresh so
-// continue-watching works everywhere.
+// (AdMob interstitial natively, house overlay on web/TV/failure), and keeps
+// watch_progress fresh so continue-watching works everywhere.
+//
+// Ads follow one rule: after an ad is shown on a title, the next one is due
+// intervalSeconds (default 10 min) of wall-clock time later — the countdown
+// keeps running while the viewer is away, so returning inside the window
+// plays with no ads at all.
 //
 // phase is derived, never stored: loading -> preroll? -> playing -> ended,
 // with error winning whenever a load/playback error exists.
 
 const CONTROLS_HIDE_MS = 4500;
 const SUBTITLE_PREF_KEY = "ruxx.subtitle.language";
+const SUB_SCALE_KEY = "ruxx.subtitle.scale";
+const SUB_OFFSET_KEY = "ruxx.subtitle.offset";
 const QUALITY_PREF_KEY = "ruxx.quality.height";
 const SPEED_PREF_KEY = "ruxx.playback.speed";
+const SLEEP_OPTIONS = [0, 15, 30, 45, 60];
 const DOUBLE_TAP_MS = 260;
 const RIPPLE_MS = 430;
+
+// Wall-clock ad cadence: when the last ad was shown for a title, stored per
+// title. The countdown keeps running while the viewer is away, so returning
+// inside the window plays with no ads at all (see adIsDue in playback.ts).
+const AD_CLOCK_PREFIX = "ruxx.adclock.";
+const AD_CLOCK_KEY = (id) => `${AD_CLOCK_PREFIX}${id}`;
 
 // Scrub gestures delegate to handlers wired up per-instance (refs are only
 // touched inside those event callbacks, never during render).
@@ -96,10 +115,7 @@ const EMPTY_LOAD = {
   error: null,
   stream: null,
   progress: null,
-  markers: [],
 };
-
-const NO_MARKERS = [];
 
 function formatTime(totalSeconds) {
   const s = Math.max(0, Math.floor(totalSeconds || 0));
@@ -115,6 +131,28 @@ export default function Player() {
   const movieId = Array.isArray(params.id) ? params.id[0] : params.id;
   const profile = useAuthStore((s) => s.profile);
   const insets = useSafeAreaInsets();
+  const isDesktop = useIsDesktop();
+
+  // Ad-overlay "Go Premium" CTA: same Paystack flow as Profile, with the
+  // player rendering its own alert (it has no gold AppAlert of its own).
+  const [checkoutAlert, setCheckoutAlert] = useState({
+    visible: false,
+    title: "",
+    message: "",
+    type: "info",
+    accent: null,
+  });
+  const notifyCheckout = useCallback(
+    (title, message, type = "info", accent = null) =>
+      setCheckoutAlert({ visible: true, title, message, type, accent }),
+    []
+  );
+  const checkout = usePremiumCheckout(notifyCheckout);
+
+  // The Windows/macOS app is premium-only and ad-free: a free (or signed
+  // out) account gets the subscribe wall instead of a stream. False on
+  // every other platform, so the free ad-supported model is untouched.
+  const desktopLocked = useDesktopPremiumLock();
 
   const adsLoaded = useAdsConfig((s) => s.loaded);
   const loadAds = useAdsConfig((s) => s.load);
@@ -141,6 +179,8 @@ export default function Player() {
 
   const [playback, setPlayback] = useState("idle"); // idle | ended
   const [prerollDone, setPrerollDone] = useState(false);
+  // { id, lastAt, prerollDue } once the ad-clock restore lands for a title.
+  const [adPlan, setAdPlan] = useState({ id: null, lastAt: null, prerollDue: true });
   const [adBreak, setAdBreak] = useState(null);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
@@ -163,14 +203,24 @@ export default function Player() {
   const engineRef = useRef(null);
   const adBreakRef = useRef(null);
   const phaseRef = useRef("loading");
-  const cuePointsRef = useRef([]);
-  const consumedRef = useRef(0);
   const lastSavedRef = useRef(0);
   const latestRef = useRef({ position: 0, duration: 0 });
   const hasStartedRef = useRef(false);
   const playLoggedRef = useRef(false);
   const completedRef = useRef(false);
   const mountedRef = useRef(true);
+  // Mirrors the current movieId so async callbacks (subtitle fetch, ad
+  // shows) can detect a title switch on this live instance and bail out.
+  const movieIdRef = useRef(movieId);
+  useEffect(() => {
+    movieIdRef.current = movieId;
+  });
+  // Wall-clock ad cadence: last ad shown (epoch ms) for this title, kept
+  // fresh for the progress tick (mid-rolls) and the finish stamp.
+  const adClockRef = useRef(null);
+  // True while an ad break owns the pause (so finishing it resumes exactly
+  // what it paused, instead of clobbering a sleep-timer/manual pause).
+  const pausedByBreakRef = useRef(false);
   const controlsTimerRef = useRef(null);
 
   const [subLang, setSubLang] = useState(null);
@@ -179,6 +229,11 @@ export default function Player() {
   const [subsPending, setSubsPending] = useState("");
   const [subsError, setSubsError] = useState(null);
   const [subtitleSheet, setSubtitleSheet] = useState(false);
+  const [subScale, setSubScale] = useState(1);
+  const [subOffset, setSubOffset] = useState(0);
+  const [locked, setLocked] = useState(false);
+  const [sleepMinutes, setSleepMinutes] = useState(0);
+  const lockedRef = useRef(false);
 
   const [quality, setQuality] = useState(IDLE_QUALITY);
   const [qualitySheet, setQualitySheet] = useState(false);
@@ -233,10 +288,18 @@ export default function Player() {
   }, []);
 
   // Wipe the decrypted playback copy once this player goes away (or the
-  // route switches titles) so plaintext never outlives the session.
+  // route switches titles) so plaintext never outlives the session. A break
+  // still in flight also stamps the ad clock: its impression was already
+  // logged, so the next session must not fire another ad immediately.
   useEffect(() => {
     return () => {
       void useDownloadsStore.getState().releaseLocalPlayback(movieId);
+      if (adBreakRef.current) {
+        adBreakRef.current = null;
+        const now = Date.now();
+        adClockRef.current = now;
+        AsyncStorage.setItem(AD_CLOCK_KEY(movieId), String(now)).catch(() => {});
+      }
     };
   }, [movieId]);
 
@@ -244,24 +307,64 @@ export default function Player() {
     loadAds();
   }, [loadAds]);
 
-  // Resolve URL + resume point + ad markers for the current title.
+  // Wall-clock ad plan for this title: when the last ad was shown, and
+  // whether a pre-roll is due right now. Resolved once the ad config is in
+  // (the interval comes from admin settings); contentReady waits on it so
+  // the preroll phase can never flash before the decision lands.
   useEffect(() => {
-    if (!movieId) return undefined;
+    if (!movieId || !adsLoaded) return undefined;
+    let cancelled = false;
+    AsyncStorage.getItem(AD_CLOCK_KEY(movieId))
+      .then((raw) => {
+        if (cancelled) return;
+        const lastAt = parseAdClock(raw);
+        adClockRef.current = lastAt;
+        setAdPlan({
+          id: movieId,
+          lastAt,
+          prerollDue: adIsDue(lastAt, Date.now(), intervalSeconds()),
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        adClockRef.current = null;
+        setAdPlan({ id: movieId, lastAt: null, prerollDue: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [movieId, adsLoaded, intervalSeconds]);
+
+  // Resolve URL + resume point for the current title. Skipped while the
+  // desktop premium wall is up: a locked account never signs a stream URL.
+  useEffect(() => {
+    if (!movieId || desktopLocked) return undefined;
     let cancelled = false;
 
-    const applyLoaded = (stream, watch, markerList) => {
+    const applyLoaded = (stream, watch) => {
       setLoadState({
         id: movieId,
         error: null,
         stream,
         progress: watch,
-        markers: markerList,
       });
       setPlayback("idle");
       setPrerollDone(false);
       hasStartedRef.current = false;
       playLoggedRef.current = false;
       completedRef.current = false;
+      // New title: drop the previous one's break, position and subtitles so
+      // nothing bleeds across a route-param switch on this live instance.
+      adBreakRef.current = null;
+      pausedByBreakRef.current = false;
+      setAdBreak(null);
+      setPosition(0);
+      setDuration(0);
+      setSubLang(null);
+      setSubCues([]);
+      setSubsError(null);
+      setSubsPending("");
+      setSubsLoading(false);
     };
 
     (async () => {
@@ -284,7 +387,6 @@ export default function Player() {
                 error: decryptError?.message || "Offline copy could not be opened.",
                 stream: null,
                 progress: null,
-                markers: [],
               });
             }
             return;
@@ -293,15 +395,14 @@ export default function Player() {
           if (localUri) {
             const watch = await fetchWatchProgress(movieId).catch(() => null);
             if (cancelled) return;
-            applyLoaded({ url: localUri, quality: "offline", source: "local" }, watch, []);
+            applyLoaded({ url: localUri, quality: "offline", source: "local" }, watch);
             return;
           }
         }
 
-        const [streamResult, watch, adMarkers] = await Promise.all([
+        const [streamResult, watch] = await Promise.all([
           resolveStreamUrl(movieId),
           fetchWatchProgress(movieId).catch(() => null),
-          fetchAdMarkers(movieId),
         ]);
         if (cancelled) return;
         if (!streamResult) {
@@ -310,11 +411,10 @@ export default function Player() {
             error: "This title isn't available for streaming right now.",
             stream: null,
             progress: null,
-            markers: [],
           });
           return;
         }
-        applyLoaded(streamResult, watch, adMarkers);
+        applyLoaded(streamResult, watch);
       } catch (e) {
         if (cancelled) return;
         // Offline (and no local file): say so instead of a raw fetch error.
@@ -333,7 +433,6 @@ export default function Player() {
           error: message,
           stream: null,
           progress: null,
-          markers: [],
         });
       }
     })();
@@ -341,14 +440,13 @@ export default function Player() {
     return () => {
       cancelled = true;
     };
-  }, [movieId, loadNonce]);
+  }, [movieId, loadNonce, desktopLocked]);
 
   const loadedForCurrent = loadState.id === movieId;
   const stream = loadedForCurrent ? loadState.stream : null;
   const localPlayback = stream?.source === "local";
   const dataError = loadedForCurrent ? loadState.error : null;
   const progressRow = loadedForCurrent ? loadState.progress : null;
-  const markers = loadedForCurrent ? loadState.markers : NO_MARKERS;
   const dataLoading = !loadedForCurrent;
 
   // Offline movie fetch fails too — fall back to the manifest snapshot.
@@ -356,53 +454,59 @@ export default function Player() {
   const premium = !!profile?.is_premium;
   const resumePosition = useMemo(() => initialResumePosition(progressRow), [progressRow]);
 
-  const cuePoints = useMemo(() => {
-    if (localPlayback || premium || !adsLoaded || !isEnabled("mid_roll")) return [];
-    return buildCuePoints({
-      manualSeconds: markers,
-      runtimeSeconds: movie?.runtime_seconds ?? null,
-      intervalSeconds: intervalSeconds(),
-      midRollEnabled: true,
-    });
-  }, [localPlayback, premium, adsLoaded, isEnabled, intervalSeconds, markers, movie]);
-
-  useEffect(() => {
-    cuePointsRef.current = cuePoints;
-  }, [cuePoints]);
+  // Mid-rolls only run on online, non-premium playback with ad config in.
+  const midRollsArmed =
+    !localPlayback && !premium && adsLoaded && isEnabled("mid_roll");
 
   // Freeze resume-derived refs once this stream is the active one (the
   // engine may start reporting positions in the same tick).
   useEffect(() => {
     if (!stream) return;
-    consumedRef.current = resumePosition;
     lastSavedRef.current = resumePosition;
     latestRef.current = { position: resumePosition, duration: 0 };
   }, [stream, resumePosition]);
 
+  // The ad-clock restore must land for this title before playback can be
+  // called ready: it decides whether the pre-roll is due (within the window
+  // after a recent ad, the title starts with no break at all).
+  const adPlanReady = adPlan.id === movieId;
+
   // Downloaded copies never play ads (no ad inventory offline by design).
-  const needsPreRoll = !!stream && !localPlayback && !premium && adsLoaded && isEnabled("pre_roll");
+  const needsPreRoll =
+    !!stream &&
+    !localPlayback &&
+    !premium &&
+    adPlanReady &&
+    isEnabled("pre_roll") &&
+    adPlan.prerollDue;
   // A failed movie fetch is survivable when the manifest snapshot exists.
   const showError = !!dataError || (!!movieError && !movie);
   const errorMessage = dataError || movieError || "Playback failed.";
   const contentReady =
-    !!stream && !!movie && !dataLoading && !movieLoading && (localPlayback || !!adsLoaded);
+    !!stream &&
+    !!movie &&
+    !dataLoading &&
+    !movieLoading &&
+    (localPlayback || (!!adsLoaded && adPlanReady));
 
   const phase = showError
     ? "error"
-    : !contentReady
-      ? "loading"
-      : needsPreRoll && !prerollDone
-        ? "preroll"
-        : playback === "ended"
-          ? "ended"
-          : "playing";
+    : desktopLocked
+      ? "locked"
+      : !contentReady
+        ? "loading"
+        : needsPreRoll && !prerollDone
+          ? "preroll"
+          : playback === "ended"
+            ? "ended"
+            : "playing";
 
   useEffect(() => {
     phaseRef.current = phase;
   });
 
   const showControls = useCallback(() => {
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || lockedRef.current) return;
     setControlsVisible(true);
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
     controlsTimerRef.current = setTimeout(() => {
@@ -411,12 +515,37 @@ export default function Player() {
   }, []);
 
   const toggleControls = useCallback(() => {
+    if (lockedRef.current) return;
     setControlsVisible((visible) => {
       if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
       if (visible) return false;
       controlsTimerRef.current = setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_MS);
       return true;
     });
+  }, []);
+
+  useEffect(() => {
+    lockedRef.current = locked;
+  }, [locked]);
+
+  useEffect(() => {
+    if (!sleepMinutes) return undefined;
+    const timer = setTimeout(() => {
+      pausedByBreakRef.current = false;
+      engineRef.current?.pause();
+      if (mountedRef.current) setSleepMinutes(0);
+    }, sleepMinutes * 60000);
+    return () => clearTimeout(timer);
+  }, [sleepMinutes]);
+
+  const changeSubScale = useCallback((next) => {
+    setSubScale(next);
+    AsyncStorage.setItem(SUB_SCALE_KEY, String(next)).catch(() => undefined);
+  }, []);
+
+  const changeSubOffset = useCallback((next) => {
+    setSubOffset(next);
+    AsyncStorage.setItem(SUB_OFFSET_KEY, String(next)).catch(() => undefined);
   }, []);
 
   const applySubtitleLanguage = useCallback(
@@ -435,7 +564,7 @@ export default function Player() {
       setSubsError(null);
       try {
         const cues = await fetchSubtitleCues(movieId, code);
-        if (!mountedRef.current) return false;
+        if (!mountedRef.current || movieIdRef.current !== movieId) return false;
         setSubCues(cues);
         setSubLang(code);
         AsyncStorage.setItem(SUBTITLE_PREF_KEY, code).catch(() => undefined);
@@ -443,11 +572,11 @@ export default function Player() {
       } catch (e) {
         // Keep whatever is on screen (an admin upload, or the previous
         // language) — a failed generation must not blank the subtitles.
-        if (!mountedRef.current) return false;
+        if (!mountedRef.current || movieIdRef.current !== movieId) return false;
         setSubsError(e instanceof Error ? e.message : "Subtitles unavailable");
         return false;
       } finally {
-        if (mountedRef.current) {
+        if (mountedRef.current && movieIdRef.current === movieId) {
           setSubsPending("");
           setSubsLoading(false);
         }
@@ -456,13 +585,20 @@ export default function Player() {
     [movieId]
   );
 
-  // Restore the viewer's last subtitle language whenever a title loads.
+  // Restore the viewer's last subtitle language + size/offset prefs.
   useEffect(() => {
     if (!movieId) return undefined;
     let cancelled = false;
-    AsyncStorage.getItem(SUBTITLE_PREF_KEY)
-      .then((code) => {
-        if (!cancelled && code) applySubtitleLanguage(code);
+    AsyncStorage.multiGet([SUBTITLE_PREF_KEY, SUB_SCALE_KEY, SUB_OFFSET_KEY])
+      .then((pairs) => {
+        if (cancelled) return;
+        const prefs = Object.fromEntries(pairs);
+        const code = prefs[SUBTITLE_PREF_KEY];
+        const scale = Number(prefs[SUB_SCALE_KEY]);
+        const offset = Number(prefs[SUB_OFFSET_KEY]);
+        if (Number.isFinite(scale) && scale >= 0.7 && scale <= 1.8) setSubScale(scale);
+        if (Number.isFinite(offset) && offset >= -3 && offset <= 3) setSubOffset(offset);
+        if (code) applySubtitleLanguage(code);
       })
       .catch(() => undefined);
     return () => {
@@ -480,7 +616,7 @@ export default function Player() {
 
   const ensureStarted = useCallback(() => {
     if (hasStartedRef.current) return;
-    if (phaseRef.current !== "playing" || !engineRef.current) return;
+    if (phaseRef.current !== "playing" || adBreakRef.current || !engineRef.current) return;
     hasStartedRef.current = true;
     engineRef.current.play();
   }, []);
@@ -586,32 +722,48 @@ export default function Player() {
     [ensureStarted, applyQualityPref, applySpeedPref]
   );
 
+  // One ad per title every intervalSeconds of wall-clock time. The stamp is
+  // written when a break *ends* (any status) so a failure or quick skip
+  // still consumes the window — that is what keeps returning viewers ad-free
+  // and stops a failing unit from re-firing on every progress tick.
+  const stampAdClock = useCallback(() => {
+    if (!movieId) return;
+    const now = Date.now();
+    adClockRef.current = now;
+    setAdPlan((prev) => ({ ...prev, lastAt: now, prerollDue: false }));
+    AsyncStorage.setItem(AD_CLOCK_KEY(movieId), String(now)).catch(() => {});
+  }, [movieId]);
+
   const finishAdBreak = useCallback(
     (status) => {
       const placement = adBreakRef.current;
       adBreakRef.current = null;
       if (mountedRef.current) setAdBreak(null);
       if (placement) void logAdEvent({ movieId, placement, status });
+      stampAdClock();
 
       if (phaseRef.current === "preroll") {
         setPrerollDone(true); // derived phase flips to "playing" and starts content
-      } else if (phaseRef.current === "playing") {
+      } else if (phaseRef.current === "playing" && pausedByBreakRef.current) {
+        // Only resume when this break actually paused the engine — a
+        // sleep-timer or manual pause during the ad must survive it.
+        pausedByBreakRef.current = false;
         engineRef.current?.play();
         showControls();
       }
     },
-    [movieId, showControls]
+    [movieId, showControls, stampAdClock]
   );
 
   const startAdBreak = useCallback(
-    async (placement, cue) => {
+    async (placement) => {
       if (adBreakRef.current) return;
       if (phaseRef.current !== "playing" && phaseRef.current !== "preroll") return;
       adBreakRef.current = placement;
 
       if (placement === "mid_roll") {
+        pausedByBreakRef.current = !!engineRef.current?.isPlaying();
         engineRef.current?.pause();
-        if (typeof cue === "number") engineRef.current?.seek(cue);
       }
       void logAdEvent({ movieId, placement, status: "impression" });
 
@@ -700,13 +852,16 @@ export default function Player() {
         });
       }
 
-      const cue = dueCuePoint(cuePointsRef.current, nextPosition, consumedRef.current);
-      if (cue !== null) {
-        consumedRef.current = cue;
-        void startAdBreak("mid_roll", cue);
+      // One cadence for every mid-roll: an ad is due once intervalSeconds of
+      // wall-clock time have passed since the last one on this title. Pausing
+      // or leaving does not pause the countdown, so the check simply reads
+      // the stamped clock against the current time.
+      if (!midRollsArmed) return;
+      if (adIsDue(adClockRef.current, Date.now(), intervalSeconds())) {
+        void startAdBreak("mid_roll");
       }
     },
-    [movieId, startAdBreak]
+    [movieId, startAdBreak, midRollsArmed, intervalSeconds]
   );
 
   const handleEnded = useCallback(() => {
@@ -734,7 +889,6 @@ export default function Player() {
       error: message || "Playback failed.",
       stream: null,
       progress: null,
-      markers: [],
     });
   }, [movieId]);
 
@@ -761,7 +915,6 @@ export default function Player() {
       completedRef.current = false;
       playLoggedRef.current = false;
       lastSavedRef.current = 0;
-      consumedRef.current = 0;
       handle.seek(0);
       setPosition(0);
       setPlayback("idle");
@@ -784,8 +937,6 @@ export default function Player() {
       if (!handle || adBreakRef.current || phaseRef.current !== "playing") return;
       const bounded = Math.max(0, target);
       handle.seek(bounded);
-      // Scrubbing past an unplayed marker consumes it — no ad ambush on seek.
-      if (bounded > consumedRef.current) consumedRef.current = bounded;
       showControls();
     },
     [showControls]
@@ -1020,10 +1171,10 @@ export default function Player() {
   const watchedFraction = duration > 0 ? Math.min(1, position / duration) : 0;
   const progressFraction = scrub ? scrub.fraction : watchedFraction;
   const displayTime = scrub ? scrub.time : position;
-  const activeCue = subCues.length > 0 ? cueAt(subCues, position) : null;
+  const activeCue = subCues.length > 0 ? cueAt(subCues, position + subOffset) : null;
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, isDesktop && styles.rootWide]}>
       <StatusBar style="light" />
       {stream && movie && !showError ? (
         <PlayerEngine
@@ -1041,7 +1192,7 @@ export default function Player() {
       ) : null}
 
       {/* Tap layer: tap = controls, double-tap = seek, swipe = volume/brightness. */}
-      {!adBreak && phase === "playing" ? (
+      {!adBreak && phase === "playing" && !locked ? (
         <View
           style={styles.tapLayer}
           onLayout={(e) => {
@@ -1052,6 +1203,25 @@ export default function Player() {
           accessibilityRole="button"
           accessibilityLabel="Player gestures: tap for controls, double tap to seek, swipe up or down for volume and brightness"
         />
+      ) : null}
+
+      {/* Screen lock: hides every control until the lock pill is tapped. */}
+      {locked && phase === "playing" ? (
+        <View style={styles.lockLayer} pointerEvents="box-none">
+          <TouchableOpacity
+            style={styles.lockBtn}
+            onPress={() => {
+              setLocked(false);
+              lockedRef.current = false;
+              showControls();
+            }}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Unlock player controls"
+          >
+            <Ionicons name="lock-closed" size={22} color="#fff" />
+          </TouchableOpacity>
+        </View>
       ) : null}
 
       {/* Double-tap seek feedback */}
@@ -1097,7 +1267,7 @@ export default function Player() {
       ) : null}
 
       {/* Controls */}
-      {controlsVisible && !adBreak && phase === "playing" ? (
+      {controlsVisible && !adBreak && phase === "playing" && !locked ? (
         <Animated.View
           entering={FadeIn.duration(170)}
           exiting={FadeOut.duration(200)}
@@ -1238,6 +1408,42 @@ export default function Player() {
 
                 <View style={styles.deckRight}>
                   <TouchableOpacity
+                    style={styles.iconPill}
+                    onPress={() => {
+                      setLocked(true);
+                      setControlsVisible(false);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Lock player controls"
+                  >
+                    <Ionicons name="lock-closed-outline" size={16} color="rgba(255,255,255,0.9)" />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.iconPill, sleepMinutes > 0 && styles.deckPillGold]}
+                    onPress={() => {
+                      showControls();
+                      setSleepMinutes((mins) => {
+                        const index = SLEEP_OPTIONS.indexOf(mins);
+                        return SLEEP_OPTIONS[(index + 1) % SLEEP_OPTIONS.length];
+                      });
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      sleepMinutes > 0 ? `Sleep timer: ${sleepMinutes} minutes` : "Set sleep timer"
+                    }
+                  >
+                    <Ionicons
+                      name="moon-outline"
+                      size={16}
+                      color={sleepMinutes > 0 ? GOLD : "rgba(255,255,255,0.9)"}
+                    />
+                    {sleepMinutes > 0 ? (
+                      <Text style={styles.deckPillTextGold}>{sleepMinutes}m</Text>
+                    ) : null}
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
                     style={[styles.iconPill, fullscreen && styles.deckPillGold]}
                     onPress={() => setFullscreenMode(!fullscreen)}
                     accessibilityRole="button"
@@ -1298,7 +1504,9 @@ export default function Player() {
       {/* Subtitles */}
       {activeCue && phase === "playing" && !adBreak ? (
         <View style={styles.subtitleLayer} pointerEvents="none">
-          <Text style={styles.subtitleText}>{activeCue}</Text>
+          <Text style={[styles.subtitleText, { fontSize: 16 * subScale, lineHeight: 22 * subScale }]}>
+            {activeCue}
+          </Text>
         </View>
       ) : null}
 
@@ -1328,7 +1536,16 @@ export default function Player() {
 
       {/* Ad break (house overlay path: web, TV, no unit, fail_open=false) */}
       {adBreak?.mode === "overlay" ? (
-        <AdOverlay placement={adBreak.placement} onFinished={finishAdBreak} />
+        <AdOverlay
+          placement={adBreak.placement}
+          onFinished={finishAdBreak}
+          onPremium={checkout.openPremium}
+          adsenseSlot={
+            Platform.OS === "web" && !isDesktopShell()
+              ? unitFor(adBreak.placement) || ADSENSE_INTERSTITIAL_SLOT
+              : undefined
+          }
+        />
       ) : null}
 
       {/* Transcription engine host: hidden iframe / WebView, always mounted. */}
@@ -1340,6 +1557,10 @@ export default function Player() {
         active={subLang}
         busy={subsLoading}
         error={subsError}
+        scale={subScale}
+        offset={subOffset}
+        onScaleChange={changeSubScale}
+        onOffsetChange={changeSubOffset}
         onSelect={handleSubtitleSelect}
         onClose={() => setSubtitleSheet(false)}
       />
@@ -1358,6 +1579,23 @@ export default function Player() {
         speed={speed}
         onSelect={handleSpeedSelect}
         onClose={() => setSpeedSheet(false)}
+      />
+
+      <PremiumSheet
+        visible={checkout.premiumModal}
+        firstTime={checkout.firstTime}
+        upgrading={checkout.upgrading}
+        onCheckout={checkout.handleUpgrade}
+        onClose={checkout.closePremium}
+      />
+
+      <AppAlert
+        visible={checkoutAlert.visible}
+        title={checkoutAlert.title}
+        message={checkoutAlert.message}
+        type={checkoutAlert.type}
+        accent={checkoutAlert.accent}
+        onClose={() => setCheckoutAlert((a) => ({ ...a, visible: false }))}
       />
 
       {/* Finished */}
@@ -1386,6 +1624,41 @@ export default function Player() {
                 accessibilityLabel="Back to browse"
               >
                 <Text style={styles.doneGhostText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </SafeAreaView>
+      ) : null}
+
+      {/* Premium wall — the desktop app streams for Premium only */}
+      {phase === "locked" ? (
+        <SafeAreaView style={styles.cardBackdrop}>
+          <View style={styles.card}>
+            <View style={styles.doneBadge}>
+              <Ionicons name="sparkles" size={26} color="#0a0a0a" />
+            </View>
+            <Text style={styles.centerTitle}>Premium on desktop</Text>
+            <Text style={styles.centerSub}>
+              The Windows and macOS app is ad-free and included with Premium. Subscribe to watch{" "}
+              {title && title !== "Now playing" ? `"${title}"` : "movies"} here.
+            </Text>
+            <View style={styles.doneRow}>
+              <TouchableOpacity
+                style={styles.donePrimary}
+                onPress={checkout.openPremium}
+                accessibilityRole="button"
+                accessibilityLabel="Go Premium"
+              >
+                <Ionicons name="sparkles" size={17} color="#0a0a0a" />
+                <Text style={styles.donePrimaryText}>Go Premium</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.doneGhost}
+                onPress={goBack}
+                accessibilityRole="button"
+                accessibilityLabel="Back to browse"
+              >
+                <Text style={styles.doneGhostText}>Back</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1427,6 +1700,7 @@ export default function Player() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#000" },
+  rootWide: { maxWidth: 1200, width: "100%", alignSelf: "center" },
   tapLayer: { ...StyleSheet.absoluteFill, zIndex: 1 },
   controls: { ...StyleSheet.absoluteFill, zIndex: 10, justifyContent: "space-between" },
   topScrim: { position: "absolute", top: 0, left: 0, right: 0, height: 160 },
@@ -1680,6 +1954,22 @@ const styles = StyleSheet.create({
     textShadowColor: "rgba(0,0,0,0.9)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 5,
+  },
+  lockLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 30,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  lockBtn: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(20,20,20,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
   },
   subtitlePill: {
     flexDirection: "row",

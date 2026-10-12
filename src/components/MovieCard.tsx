@@ -49,6 +49,7 @@ export default function MovieCard({ movie, width = 124, progress, onPress, hasTV
             source={{ uri: movie.poster_url }}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
+            cachePolicy="memory-disk"
             transition={200}
             accessibilityIgnoresInvertColors
           />

@@ -16,9 +16,13 @@ import { GOLD, GOLD_GRADIENT } from "../../context/ThemeContext";
 import { formatMeta } from "../lib/format";
 import type { HeroItem, Movie } from "../lib/types";
 
-const { width: SCREEN_W } = Dimensions.get("window");
-const BACKDROP_H = Math.min(Math.round(SCREEN_W * 0.62), 420);
+const FALLBACK_W = Dimensions.get("window").width || 390;
 const AUTO_MS = 4000;
+
+function heroHeight(w: number): number {
+  if (w >= 900) return Math.min(Math.round(w * 0.42), 500);
+  return Math.min(Math.round(w * 0.62), 420);
+}
 
 // GOLD_GRADIENT is a plain string[] (ThemeContext is JS); expo-linear-gradient
 // wants a tuple of at least two colors — it always has three.
@@ -45,14 +49,17 @@ function Slide({ item, width, onPlay, onInfo, hasTVPreferredFocus, onFocusChange
   const [infoFocused, setInfoFocused] = useState(false);
   const { movie, label } = item;
   const meta = formatMeta(movie);
+  const wide = width >= 900;
+  const height = heroHeight(width);
 
   return (
-    <View style={[styles.slide, { width }]}>
+    <View style={[styles.slide, { width, height }]}>
       {movie.backdrop_url || movie.poster_url ? (
         <Image
           source={{ uri: movie.backdrop_url ?? movie.poster_url ?? undefined }}
           style={StyleSheet.absoluteFill}
           contentFit="cover"
+          cachePolicy="memory-disk"
           transition={250}
           accessibilityIgnoresInvertColors
         />
@@ -67,13 +74,13 @@ function Slide({ item, width, onPlay, onInfo, hasTVPreferredFocus, onFocusChange
         pointerEvents="none"
       />
 
-      <View style={styles.body}>
+      <View style={[styles.body, wide && styles.bodyWide]}>
         <View style={styles.eyebrow}>
           <View style={styles.eyebrowTick} />
           <Text style={styles.eyebrowText}>{label}</Text>
         </View>
 
-        <Text style={styles.title} numberOfLines={2}>
+        <Text style={[styles.title, wide && styles.titleWide]} numberOfLines={2}>
           {movie.title}
         </Text>
 
@@ -91,12 +98,12 @@ function Slide({ item, width, onPlay, onInfo, hasTVPreferredFocus, onFocusChange
         </View>
 
         {movie.description ? (
-          <Text style={styles.description} numberOfLines={2}>
+          <Text style={[styles.description, wide && styles.descriptionWide]} numberOfLines={wide ? 3 : 2}>
             {movie.description}
           </Text>
         ) : null}
 
-        <View style={styles.actions}>
+        <View style={[styles.actions, wide && styles.actionsWide]}>
           <Pressable
             focusable
             accessible
@@ -112,7 +119,7 @@ function Slide({ item, width, onPlay, onInfo, hasTVPreferredFocus, onFocusChange
               onFocusChange(-1);
             }}
             onPress={() => onPlay(movie)}
-            style={({ pressed }) => [styles.playBtn, playFocused && styles.focused, pressed && styles.pressed]}
+            style={({ pressed }) => [styles.playBtn, wide && styles.btnWide, playFocused && styles.focused, pressed && styles.pressed]}
           >
             <LinearGradient colors={CTA_COLORS} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.playGrad}>
               <Ionicons name="play" size={17} color="#111" />
@@ -136,6 +143,7 @@ function Slide({ item, width, onPlay, onInfo, hasTVPreferredFocus, onFocusChange
             onPress={() => onInfo(movie)}
             style={({ pressed }) => [
               styles.infoBtn,
+              wide && styles.btnWide,
               infoFocused && styles.focused,
               pressed && styles.pressed,
             ]}
@@ -154,21 +162,22 @@ export default function HeroCarousel({ items, onPlay, onInfo, hasTVPreferredFocu
   const indexRef = useRef(0);
   const focusCount = useRef(0);
   const [index, setIndex] = useState(0);
+  const [slideW, setSlideW] = useState(FALLBACK_W);
 
   useEffect(() => {
-    if (items.length < 2) return undefined;
+    if (items.length < 2 || slideW <= 0) return undefined;
     const timer = setInterval(() => {
       if (focusCount.current > 0) return;
       const next = (indexRef.current + 1) % items.length;
       indexRef.current = next;
       setIndex(next);
-      scrollRef.current?.scrollTo({ x: next * SCREEN_W, animated: true });
+      scrollRef.current?.scrollTo({ x: next * slideW, animated: true });
     }, AUTO_MS);
     return () => clearInterval(timer);
-  }, [items.length]);
+  }, [items.length, slideW]);
 
   const handleMomentumEnd = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const next = Math.round(event.nativeEvent.contentOffset.x / SCREEN_W);
+    const next = Math.round(event.nativeEvent.contentOffset.x / slideW);
     if (next >= 0 && next < items.length && next !== indexRef.current) {
       indexRef.current = next;
       setIndex(next);
@@ -178,7 +187,13 @@ export default function HeroCarousel({ items, onPlay, onInfo, hasTVPreferredFocu
   if (items.length === 0) return null;
 
   return (
-    <View style={styles.wrap}>
+    <View
+      style={[styles.wrap, { height: heroHeight(slideW) }]}
+      onLayout={(e) => {
+        const w = e.nativeEvent.layout.width;
+        if (w > 0 && Math.abs(w - slideW) > 1) setSlideW(w);
+      }}
+    >
       <ScrollView
         ref={scrollRef}
         horizontal
@@ -190,7 +205,7 @@ export default function HeroCarousel({ items, onPlay, onInfo, hasTVPreferredFocu
           <Slide
             key={item.movie.id}
             item={item}
-            width={SCREEN_W}
+            width={slideW}
             onPlay={onPlay}
             onInfo={onInfo}
             hasTVPreferredFocus={hasTVPreferredFocus && i === 0}
@@ -213,8 +228,8 @@ export default function HeroCarousel({ items, onPlay, onInfo, hasTVPreferredFocu
 }
 
 const styles = StyleSheet.create({
-  wrap: { height: BACKDROP_H, marginBottom: 18 },
-  slide: { height: BACKDROP_H, justifyContent: "flex-end" },
+  wrap: { height: heroHeight(FALLBACK_W), marginBottom: 18 },
+  slide: { justifyContent: "flex-end" },
   fallbackBg: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "#141414" },
 
   dots: {
@@ -229,6 +244,7 @@ const styles = StyleSheet.create({
   dotActive: { width: 18, backgroundColor: GOLD },
 
   body: { paddingHorizontal: 20, gap: 9 },
+  bodyWide: { paddingHorizontal: 48, paddingBottom: 12, maxWidth: 780, alignSelf: "flex-start" },
 
   eyebrow: { flexDirection: "row", alignItems: "center", gap: 8 },
   eyebrowTick: { width: 3, height: 12, borderRadius: 2, backgroundColor: GOLD },
@@ -249,6 +265,7 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 8,
   },
+  titleWide: { fontSize: 42 },
 
   metaRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 },
   meta: {
@@ -281,8 +298,10 @@ const styles = StyleSheet.create({
     lineHeight: 18.5,
     letterSpacing: 0.1,
   },
+  descriptionWide: { fontSize: 14.5, lineHeight: 21 },
 
   actions: { flexDirection: "row", gap: 12, marginTop: 6 },
+  actionsWide: { maxWidth: 420 },
 
   playBtn: {
     flex: 1,
@@ -294,6 +313,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 6,
   },
+  btnWide: { flex: 0, minWidth: 190 },
   playGrad: {
     flexDirection: "row",
     alignItems: "center",

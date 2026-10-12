@@ -9,7 +9,7 @@ import {
   TouchableOpacity,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
@@ -22,18 +22,27 @@ import Animated, {
 } from "react-native-reanimated";
 import { useTheme, GOLD } from "../../context/ThemeContext";
 import { useHomeFeed } from "../../src/hooks/useMovies";
+import { useIsDesktop, CONTENT_MAX_WIDTH } from "../../src/hooks/useIsDesktop";
 import HeroCarousel from "../../src/components/HeroCarousel";
 import MovieRow from "../../src/components/MovieRow";
 import { useAuthStore } from "../../src/stores/auth";
 import { NEW_LISTING_SEGMENT } from "../../src/lib/api";
+import BannerAdSlot from "../../src/components/BannerAdSlot";
 import Logos from "../../assets/images/backlogo-transparent.png";
 
 const GOLD_HAIRLINE = ["rgba(232,184,74,0.5)", "rgba(255,255,255,0.10)", "transparent"];
 
 export default function Home() {
   const { theme } = useTheme();
-  const { data, loading, error, reload } = useHomeFeed();
+  const { data, loading, error, fetchedAt, reload } = useHomeFeed();
   const profile = useAuthStore((s) => s.profile);
+  const isDesktop = useIsDesktop();
+
+  useFocusEffect(
+    useCallback(() => {
+      if (fetchedAt && Date.now() - fetchedAt > 120_000) reload();
+    }, [fetchedAt, reload])
+  );
 
   const openMovie = useCallback((movie) => router.push(`/movie/${movie.id}`), []);
   const playMovie = useCallback((movie) => router.push(`/player/${movie.id}`), []);
@@ -102,7 +111,7 @@ export default function Home() {
         <LinearGradient colors={["rgba(232,184,74,0.09)", "rgba(232,184,74,0)"]} style={StyleSheet.absoluteFill} />
       </View>
 
-      <View style={styles.topBar}>
+      <View style={[styles.topBar, isDesktop && styles.topBarWide]}>
         <View style={styles.brandGroup}>
           <View style={styles.logoRingSmall}>
             <Image source={Logos} style={styles.logoSmall} resizeMode="contain" />
@@ -121,13 +130,13 @@ export default function Home() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.topRule}>
+      <View style={[styles.topRule, isDesktop && styles.topRuleWide]}>
         <LinearGradient colors={GOLD_HAIRLINE} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
       </View>
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[styles.scroll, isDesktop && styles.scrollWide]}
         refreshControl={<RefreshControl refreshing={loading} onRefresh={reload} tintColor={GOLD} />}
       >
         {heroItems.length > 0 && (
@@ -170,9 +179,9 @@ export default function Home() {
 
         {popularGenres.length > 0 && (
           <Animated.View style={styles.popularSection} entering={FadeInDown.duration(420).delay(70)}>
-            <View style={styles.popularHeader}>
+            <View style={[styles.popularHeader, isDesktop && styles.popularHeaderWide]}>
               <View style={styles.popularTick} />
-              <Text style={[styles.popularTitle, { color: theme.text }]}>Popular Genres</Text>
+              <Text style={[styles.popularTitle, { color: theme.text }, isDesktop && styles.popularTitleWide]}>Popular Genres</Text>
               <View style={styles.popularRule}>
                 <LinearGradient
                   colors={["rgba(232,184,74,0.4)", "rgba(255,255,255,0.05)", "transparent"]}
@@ -185,7 +194,7 @@ export default function Home() {
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.popularTrack}
+              contentContainerStyle={[styles.popularTrack, isDesktop && styles.popularTrackWide]}
               decelerationRate="fast"
             >
               {popularGenres.map(({ genre, count }) => (
@@ -235,7 +244,7 @@ export default function Home() {
           </View>
         )}
 
-        <View style={styles.footer}>
+        <View style={[styles.footer, isDesktop && styles.footerWide]}>
           <View style={styles.footerLine}>
             <LinearGradient
               colors={["transparent", "rgba(232,184,74,0.35)"]}
@@ -255,6 +264,7 @@ export default function Home() {
           </View>
         </View>
       </ScrollView>
+      <BannerAdSlot />
     </SafeAreaView>
   );
 }
@@ -302,6 +312,7 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 12,
   },
+  topBarWide: { paddingHorizontal: 32 },
   brand: { color: "#fff", fontSize: 21, fontWeight: "900", letterSpacing: -0.4 },
   brandGroup: { flexDirection: "row", alignItems: "center", gap: 10 },
   logoRingSmall: {
@@ -338,8 +349,10 @@ const styles = StyleSheet.create({
     borderRadius: 1,
     overflow: "hidden",
   },
+  topRuleWide: { marginHorizontal: 32 },
 
   scroll: { paddingBottom: 30 },
+  scrollWide: { width: "100%", maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center" },
 
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 30 },
   centerTitle: { fontSize: 18, fontWeight: "800", marginTop: 6, letterSpacing: -0.2 },
@@ -406,6 +419,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     marginTop: 6,
   },
+  footerWide: { paddingHorizontal: 32 },
   footerLine: { flex: 1, height: 1, borderRadius: 1, overflow: "hidden" },
   footerNote: { fontSize: 10, fontWeight: "700", letterSpacing: 1.4, textTransform: "uppercase" },
 
@@ -417,6 +431,7 @@ const styles = StyleSheet.create({
     marginRight: 20,
     marginBottom: 12,
   },
+  popularHeaderWide: { marginLeft: 32, marginRight: 32 },
   popularTick: { width: 3, height: 13, borderRadius: 2, backgroundColor: GOLD, marginRight: 9 },
   popularTitle: {
     fontSize: 12.5,
@@ -424,8 +439,10 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
     textTransform: "uppercase",
   },
+  popularTitleWide: { fontSize: 14 },
   popularRule: { flex: 1, height: 1, marginLeft: 12, borderRadius: 1, overflow: "hidden" },
   popularTrack: { paddingHorizontal: 20, gap: 10 },
+  popularTrackWide: { paddingHorizontal: 32 },
   genreCard: {
     width: 134,
     borderWidth: 1,

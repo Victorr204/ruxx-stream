@@ -164,9 +164,26 @@ Deno.serve(async (req) => {
       movieId = null;
     }
     if (!movieId) return json({ error: "movie_id is required" }, 400);
+    // Reject non-UUIDs up front: PostgREST would otherwise fail the column
+    // cast with a 500.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(movieId)) {
+      return json({ error: "movie_id must be a uuid" }, 400);
+    }
 
     // No language (or an explicit detect action) → detection only.
     const detectOnly = action === "detect" || !language;
+
+    const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    // Every branch below can trigger outbound fetches to the translate
+    // endpoint, so both paths are capped: detection by caller IP (it needs
+    // no session), translation by user id (it verified one).
+    const clientIp =
+      (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() ||
+      req.headers.get("cf-connecting-ip") ||
+      "unknown";
 
     if (!detectOnly) {
       if (!isSupportedLanguage(language as string)) {
@@ -180,11 +197,21 @@ Deno.serve(async (req) => {
       });
       const { data: userData, error: userError } = await caller.auth.getUser();
       if (userError || !userData?.user) return json({ error: "Invalid session" }, 401);
-    }
 
-    const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
+      const { data: allowed } = await db.rpc("hit_rate_limit", {
+        p_key: `subtitle_translate:${userData.user.id}`,
+        p_max: 120,
+        p_window_seconds: 3600,
+      });
+      if (allowed === false) return json({ error: "Translation rate limit exceeded" }, 429);
+    } else {
+      const { data: allowed } = await db.rpc("hit_rate_limit", {
+        p_key: `subtitle_detect:${clientIp}`,
+        p_max: 60,
+        p_window_seconds: 3600,
+      });
+      if (allowed === false) return json({ error: "Detection rate limit exceeded" }, 429);
+    }
 
     // The detection column only exists once its migration has run; a title
     // must stay fully playable (and its admin uploads fully listed) either

@@ -1,0 +1,67 @@
+# electron-builder configuration — Windows NSIS installer + macOS DMGs.
+# The exported web bundle (../dist from the repo root) ships as extraResources
+# and is served through the app:// protocol (see main.js / protocol.js).
+#
+# No code signing yet: Windows shows a SmartScreen "Unknown publisher" notice
+# (More info → Run anyway) and macOS requires right-click → Open the first
+# time. Add signing later via CSC_LINK / APPLE_ID env vars without touching
+# this file's structure.
+
+appId: com.ruxxdigital.ruxxstream
+productName: ruxx stream
+copyright: © ruxx digital
+
+directories:
+  output: release
+  buildResources: assets
+
+files:
+  - main.js
+  - preload.js
+  - protocol.js
+  - routes.js
+  - downloads.js
+  - crypto.js
+  - package.json
+
+# Paths are relative to this folder (desktop/); the web export lives one
+# level up in the repo root's dist/.
+extraResources:
+  - from: ../dist
+    to: dist
+
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+  artifactName: ruxx-stream-setup-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+  artifactName: ruxx-stream-setup-${version}-${arch}.${ext}
+
+mac:
+  category: public.app-category.entertainment
+  darkModeSupport: true
+  identity: null # unsigned for now (no Apple Developer certificate)
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  artifactName: ruxx-stream-${version}-${arch}.${ext}
+
+dmg:
+  title: ruxx stream
+
+# Auto-update feed: the same /downloads folder the installer links point at
+# (latest.yml + blockmaps must be uploaded next to the installers).
+publish:
+  provider: generic
+  url: https://app.ruxxdigital.name.ng/downloads

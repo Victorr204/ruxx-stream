@@ -9,7 +9,6 @@ export const GOLD = "#e8b84a";
 export const GOLD_GRADIENT = ["#f0c75e", "#e8b84a", "#d4a030"];
 export const HERO_GRADIENT = ["#0a0a0a", "#16120a", "#0a0a0a"];
 export const BG = "#0a0a0a";
-export const BG_DEEP = "#050505";
 export const CARD = "rgba(20,20,20,0.92)";
 export const CARD_BORDER = "rgba(255,255,255,0.06)";
 export const INPUT_BG = "rgba(255,255,255,0.04)";

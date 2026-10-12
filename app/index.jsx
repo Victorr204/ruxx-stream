@@ -26,13 +26,13 @@ import { router } from "expo-router";
 import Logos from "../assets/images/backlogo-transparent.png";
 import { useTheme } from "../context/ThemeContext";
 import { getBootSession } from "../utils/bootSession";
+import { useAuthStore } from "../src/stores/auth";
 
 const { width } = Dimensions.get("window");
 
 const SERVICES = [
   { icon: "film", label: "Movies", color: "#3b82f6" },
   { icon: "tv", label: "Series", color: "#8b5cf6" },
-  { icon: "play-circle", label: "Live", color: "#ec4899" },
   { icon: "download", label: "Offline", color: "#f59e0b" },
 ];
 
@@ -94,8 +94,11 @@ export default function Landing() {
   // Returning users can still open on "/" when the launch URL prefetch wins
   // over the boot gate's initialRouteName — hand off to the screen the boot
   // gate picked (login / home …) before this ever paints.
-  // First launches target "/", so the landing stays put.
-  const bootTarget = getBootSession()?.targetUrl;
+  // First launches target "/", so the landing stays put. The stored target
+  // only applies while the session that produced it is still alive: after a
+  // sign-out (or expiry) rerouting to /home would just bounce off the guard.
+  const session = useAuthStore((s) => s.session);
+  const bootTarget = session ? getBootSession()?.targetUrl ?? "/home" : null;
   const rerouting = !!bootTarget && bootTarget !== "/";
 
   useLayoutEffect(() => {
@@ -253,7 +256,14 @@ export default function Landing() {
           </Animated.View>
 
           <Animated.Text entering={FadeIn.delay(1600).duration(600)} style={[styles.footer, { color: theme.placeholder }]}>
-            By continuing you agree to our Terms &amp; Privacy Policy
+            By continuing you agree to our{" "}
+            <Text style={styles.footerLink} onPress={() => router.push("/terms")} accessibilityRole="link">
+              Terms
+            </Text>
+            {" & "}
+            <Text style={styles.footerLink} onPress={() => router.push("/privacy")} accessibilityRole="link">
+              Privacy Policy
+            </Text>
           </Animated.Text>
         </View>
       </SafeAreaView>
@@ -402,4 +412,5 @@ const styles = StyleSheet.create({
   secondaryLink: { fontSize: 14, fontWeight: "700" },
 
   footer: { fontSize: 11, textAlign: "center", marginTop: 4 },
+  footerLink: { color: "#e8b84a", fontWeight: "700" },
 });

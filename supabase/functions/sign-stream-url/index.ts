@@ -11,6 +11,7 @@ import { presignGetObject, storageConfigFromEnv } from "../_shared/storage.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
 const STREAM_TTL_SECONDS = 21600; // 6 hours
 
@@ -23,15 +24,18 @@ Deno.serve(async (req) => {
     if (!authorization) return json({ error: "Missing Authorization header" }, 401);
 
     let movieId: string | null = null;
-    let purpose: string | null = null;
     try {
       const body = await req.json();
       movieId = typeof body?.movie_id === "string" ? body.movie_id : null;
-      purpose = typeof body?.purpose === "string" ? body.purpose : null;
     } catch {
       movieId = null;
     }
     if (!movieId) return json({ error: "movie_id is required" }, 400);
+    // Reject non-UUIDs up front: PostgREST would otherwise fail the column
+    // cast with a 500.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(movieId)) {
+      return json({ error: "movie_id must be a uuid" }, 400);
+    }
 
     const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       global: { headers: { Authorization: authorization } },
@@ -40,11 +44,13 @@ Deno.serve(async (req) => {
 
     const { data: userData, error: userError } = await db.auth.getUser();
     if (userError || !userData?.user) return json({ error: "Invalid session" }, 401);
-    const userId = userData.user.id;
 
+    // stream_url is column-revoked from PostgREST roles (it is a raw,
+    // permanent URL), so it is deliberately absent here — the legacy
+    // fallback below reads it with the service role instead.
     const { data: movie, error: movieError } = await db
       .from("movies")
-      .select("id, title, stream_url, r2_key_free")
+      .select("id, title, r2_key_free")
       .eq("id", movieId)
       .eq("is_active", true)
       .maybeSingle();
@@ -74,27 +80,29 @@ Deno.serve(async (req) => {
       if (movie.r2_key_free) {
         url = await presignGetObject(storageConfigFromEnv(), movie.r2_key_free, STREAM_TTL_SECONDS);
       } else {
-        url = movie.stream_url;
+        // Demo/legacy rows still carry a raw URL, but the column is revoked
+        // from anon/authenticated — only the service role may read it, and
+        // the is_active gate mirrors the RLS the caller passed above.
+        const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: legacy } = await admin
+          .from("movies")
+          .select("stream_url")
+          .eq("id", movieId)
+          .eq("is_active", true)
+          .maybeSingle();
+        url = (legacy as { stream_url: string | null } | null)?.stream_url ?? null;
       }
     }
 
     if (!url) return json({ error: "No playable source for this title" }, 404);
 
-    // Analytics never blocks playback. A subtitle scan (`purpose: "scan"`)
-    // borrows this endpoint purely to resolve a URL — it must not show up
-    // as a play in the stats.
-    if (purpose !== "scan") {
-      try {
-        await db.from("playback_events").insert({
-          user_id: userId,
-          movie_id: movieId,
-          event: "play",
-          position_seconds: 0,
-        });
-      } catch (e) {
-        console.warn("[sign-stream-url] playback event not written", e);
-      }
-    }
+    // NOTE: this function used to insert an `event: "play"` row on every
+    // mint, which double-counted with the player's own play logging and let
+    // anyone inflate Trending by re-resolving URLs. Plays are logged by the
+    // player (app/player/[id].jsx) and every playback_events insert is now
+    // rate-limited by a database trigger.
 
     return json({ movie_id: movieId, url, quality, expires_in: STREAM_TTL_SECONDS });
   } catch (e) {

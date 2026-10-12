@@ -6,8 +6,9 @@ import {
   ScrollView,
   ActivityIndicator,
   TouchableOpacity,
-  Dimensions,
+  useWindowDimensions,
   Platform,
+  Share,
 } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
@@ -17,14 +18,22 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, GOLD, GOLD_GRADIENT } from "../../context/ThemeContext";
 import AppAlert from "../../utils/AppAlert";
 import { useMovie, useForYou } from "../../src/hooks/useMovies";
+import { useIsDesktop, CONTENT_MAX_WIDTH } from "../../src/hooks/useIsDesktop";
 import { fetchListIdsForMovie, fetchWatchProgress } from "../../src/lib/api";
 import { formatMeta, formatRuntime } from "../../src/lib/format";
 import { useDownloadsStore } from "../../src/stores/downloads";
+import { usePremiumCheckout } from "../../src/hooks/usePremiumCheckout";
+import { useDesktopPremiumLock } from "../../src/hooks/useDesktopPremiumLock";
+import { isDesktopShell } from "../../src/lib/platform";
 import ListSheet from "../../src/components/ListSheet";
 import MovieRow from "../../src/components/MovieRow";
+import PremiumSheet from "../../src/components/PremiumSheet";
+import TrailerModal from "../../src/components/TrailerModal";
 
-const { width: SCREEN_W } = Dimensions.get("window");
-const BACKDROP_H = Math.min(Math.round(SCREEN_W * 0.56), 380);
+function backdropHeight(w) {
+  if (w >= 900) return Math.min(Math.round(w * 0.32), 440);
+  return Math.min(Math.round(w * 0.56), 380);
+}
 
 const RESUME_THRESHOLD_SECONDS = 10;
 const END_MARGIN_SECONDS = 15;
@@ -35,12 +44,21 @@ export default function MovieDetail() {
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const { data: movie, loading, error, reload } = useMovie(id);
   const forYou = useForYou(movie);
+  const { width: windowW } = useWindowDimensions();
+  const isDesktop = useIsDesktop();
+  const backdropH = backdropHeight(windowW);
 
   const [resumeState, setResumeState] = useState({ id: null, position: 0 });
   const [playFocused, setPlayFocused] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
   const [listSheetOpen, setListSheetOpen] = useState(false);
+  const [trailerOpen, setTrailerOpen] = useState(false);
   const [membership, setMembership] = useState({ id: null, ids: [] });
+
+  // Same Paystack checkout flow as Profile/Player (rendered below).
+  const notifyCheckout = (title, message, type = "info", accent = null) =>
+    setAlert({ visible: true, title, message, type, accent });
+  const checkout = usePremiumCheckout(notifyCheckout);
 
   // No stream URL is resolved here — the store does that only when the
   // user actually presses Download (each resolve logs playback_events).
@@ -93,10 +111,22 @@ export default function MovieDetail() {
 
   const inListIds = membership.id === id ? membership.ids : [];
 
+  // Desktop app: Play is premium-only there (the wall is the subscribe
+  // pitch); every other platform keeps the free, ad-supported flow.
+  const desktopLocked = useDesktopPremiumLock();
+
+  const handlePlay = () => {
+    if (desktopLocked) {
+      checkout.openPremium();
+      return;
+    }
+    router.push(`/player/${movie.id}`);
+  };
+
   const goBack = () => {
-    try {
+    if (router.canGoBack()) {
       router.back();
-    } catch (_e) {
+    } else {
       router.navigate("/home");
     }
   };
@@ -133,7 +163,7 @@ export default function MovieDetail() {
   const canResume = position > 0;
   const meta = formatMeta(movie);
 
-  const showDownload = Platform.OS !== "web";
+  const showDownload = Platform.OS !== "web" || isDesktopShell();
   const dlState = dlEntry?.state ?? null;
   const dlLabel =
     dlState === "downloading"
@@ -162,12 +192,7 @@ export default function MovieDetail() {
     const result = await startDownload(movie);
     if (result.ok) return;
     if (result.reason === "premium-required") {
-      setAlert({
-        visible: true,
-        title: "Premium Plan Required",
-        message: "The Premium plan will unlock ad-free streaming and offline downloads. Stay tuned!",
-        type: "info",
-      });
+      checkout.openPremium();
     } else if (result.reason === "streaming-only") {
       setAlert({
         visible: true,
@@ -193,6 +218,18 @@ export default function MovieDetail() {
     // busy / cancelled / unsupported: nothing to tell the user.
   };
 
+  const handleShare = () => {
+    const siteUrl = process.env.EXPO_PUBLIC_SITE_URL;
+    const link = siteUrl
+      ? `${siteUrl}/movie/${movie.id}`
+      : `ruxxstream://movie/${movie.id}`;
+    Share.share({
+      message: `Watch "${movie.title}" on ruxx stream — ${link}`,
+    }).catch(() => {
+      // User dismissed the share sheet.
+    });
+  };
+
   return (
     <View style={[styles.root, { backgroundColor: theme.background }]}>
       <AppAlert
@@ -203,20 +240,31 @@ export default function MovieDetail() {
         theme={theme}
         onClose={() => setAlert((a) => ({ ...a, visible: false }))}
       />
+      <PremiumSheet
+        visible={checkout.premiumModal}
+        firstTime={checkout.firstTime}
+        upgrading={checkout.upgrading}
+        onCheckout={checkout.handleUpgrade}
+        onClose={checkout.closePremium}
+      />
       <ListSheet
         visible={listSheetOpen}
         movieId={movie.id}
         onClose={() => setListSheetOpen(false)}
         onMembershipChange={(ids) => setMembership({ id: movie.id, ids })}
       />
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+      {trailerOpen && movie.trailer_url ? (
+        <TrailerModal url={movie.trailer_url} onClose={() => setTrailerOpen(false)} />
+      ) : null}
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={[styles.scroll, isDesktop && styles.scrollWide]}>
         {/* ── Backdrop ── */}
-        <View style={styles.backdrop}>
+        <View style={[styles.backdrop, { height: backdropH }]}>
           {movie.backdrop_url || movie.poster_url ? (
             <Image
               source={{ uri: movie.backdrop_url ?? movie.poster_url }}
               style={StyleSheet.absoluteFill}
               contentFit="cover"
+              cachePolicy="memory-disk"
               transition={250}
               accessibilityIgnoresInvertColors
             />
@@ -232,19 +280,19 @@ export default function MovieDetail() {
         </View>
 
         {/* ── Title block ── */}
-        <View style={styles.titleBlock}>
+        <View style={[styles.titleBlock, isDesktop && styles.titleBlockWide]}>
           <View style={styles.titleRow}>
             <View style={styles.posterWrap}>
               {movie.poster_url ? (
-                <Image source={{ uri: movie.poster_url }} style={styles.poster} contentFit="cover" transition={200} />
+                <Image source={{ uri: movie.poster_url }} style={[styles.poster, isDesktop && styles.posterWide]} contentFit="cover" cachePolicy="memory-disk" transition={200} />
               ) : (
-                <View style={[styles.poster, styles.posterFallback]}>
+                <View style={[styles.poster, isDesktop && styles.posterWide, styles.posterFallback]}>
                   <Ionicons name="film-outline" size={28} color="rgba(232,184,74,0.6)" />
                 </View>
               )}
             </View>
             <View style={styles.titleText}>
-              <Text style={[styles.title, { color: theme.text }]} numberOfLines={3}>
+              <Text style={[styles.title, { color: theme.text }, isDesktop && styles.titleWide]} numberOfLines={3}>
                 {movie.title}
               </Text>
               {meta ? <Text style={[styles.meta, { color: theme.subtitle }]}>{meta}</Text> : null}
@@ -268,19 +316,38 @@ export default function MovieDetail() {
             accessibilityRole="button"
             accessibilityLabel={canResume ? `Resume ${movie.title}` : `Play ${movie.title}`}
             hasTVPreferredFocus
-            onPress={() => router.push(`/player/${movie.id}`)}
+            onPress={handlePlay}
             onFocus={() => setPlayFocused(true)}
             onBlur={() => setPlayFocused(false)}
-            style={[styles.playBtn, playFocused && styles.playFocused]}
+            style={[styles.playBtn, isDesktop && styles.actionWide, playFocused && styles.playFocused]}
             activeOpacity={0.88}
           >
             <LinearGradient colors={GOLD_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.playGrad}>
               <Ionicons name={canResume ? "play-skip-forward" : "play"} size={18} color="#111" />
               <Text style={styles.playText}>
-                {canResume ? `Resume ${formatRuntime(position)}` : "Play"}
+                {desktopLocked
+                  ? "Watch with Premium"
+                  : canResume
+                    ? `Resume ${formatRuntime(position)}`
+                    : "Play"}
               </Text>
             </LinearGradient>
           </TouchableOpacity>
+
+          {movie.trailer_url ? (
+            <TouchableOpacity
+              focusable
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel={`Watch trailer — ${movie.title}`}
+              onPress={() => setTrailerOpen(true)}
+              style={[styles.dlBtn, isDesktop && styles.actionWide]}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="film-outline" size={18} color={GOLD} />
+              <Text style={[styles.dlBtnText, { color: theme.text }]}>Trailer</Text>
+            </TouchableOpacity>
+          ) : null}
 
           {/* ── Download for offline (native only) ── */}
           {showDownload ? (
@@ -290,7 +357,7 @@ export default function MovieDetail() {
               accessibilityRole="button"
               accessibilityLabel={`${dlLabel} — ${movie.title}`}
               onPress={handleDownload}
-              style={[styles.dlBtn, dlState === "ready" && styles.dlBtnReady]}
+              style={[styles.dlBtn, isDesktop && styles.actionWide, dlState === "ready" && styles.dlBtnReady]}
               activeOpacity={0.8}
             >
               <Ionicons name={dlIcon} size={18} color={GOLD} />
@@ -304,7 +371,7 @@ export default function MovieDetail() {
             accessibilityRole="button"
             accessibilityLabel={`My List — ${movie.title}`}
             onPress={() => setListSheetOpen(true)}
-            style={[styles.dlBtn, inListIds.length > 0 && styles.dlBtnReady]}
+            style={[styles.dlBtn, isDesktop && styles.actionWide, inListIds.length > 0 && styles.dlBtnReady]}
             activeOpacity={0.8}
           >
             <Ionicons
@@ -315,6 +382,19 @@ export default function MovieDetail() {
             <Text style={[styles.dlBtnText, { color: theme.text }]}>
               {inListIds.length > 0 ? "In My List" : "My List"}
             </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            focusable
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={`Share — ${movie.title}`}
+            onPress={handleShare}
+            style={[styles.dlBtn, isDesktop && styles.actionWide]}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="share-social-outline" size={18} color={GOLD} />
+            <Text style={[styles.dlBtnText, { color: theme.text }]}>Share</Text>
           </TouchableOpacity>
 
           {/* ── Description ── */}
@@ -376,6 +456,7 @@ export default function MovieDetail() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   scroll: { paddingBottom: 40 },
+  scrollWide: { width: "100%", maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center" },
 
   center: {
     flex: 1,
@@ -388,10 +469,11 @@ const styles = StyleSheet.create({
   retryBtn: { marginTop: 8, borderWidth: 1.5, borderRadius: 12, paddingHorizontal: 22, paddingVertical: 11 },
   retryText: { fontSize: 14, fontWeight: "800" },
 
-  backdrop: { height: BACKDROP_H },
+  backdrop: {},
   backdropFallback: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "#141414" },
 
   titleBlock: { paddingHorizontal: 20, marginTop: -64, gap: 14 },
+  titleBlockWide: { paddingHorizontal: 48, maxWidth: 780 },
 
   titleRow: { flexDirection: "row", gap: 14, alignItems: "flex-end" },
   posterWrap: {
@@ -406,9 +488,11 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   poster: { width: 104, height: 156 },
+  posterWide: { width: 148, height: 222 },
   posterFallback: { alignItems: "center", justifyContent: "center", backgroundColor: "#151515" },
   titleText: { flex: 1, gap: 5, paddingBottom: 4 },
   title: { fontSize: 24, fontWeight: "900", letterSpacing: -0.4, lineHeight: 29 },
+  titleWide: { fontSize: 34, lineHeight: 40 },
   meta: { fontSize: 13, fontWeight: "700" },
 
   genreRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
@@ -416,6 +500,7 @@ const styles = StyleSheet.create({
   genreText: { fontSize: 11.5, fontWeight: "700" },
 
   playBtn: { borderRadius: 14, overflow: "hidden", marginTop: 2 },
+  actionWide: { maxWidth: 380, alignSelf: "flex-start" },
   playFocused: {
     shadowColor: GOLD,
     shadowOpacity: 0.55,
