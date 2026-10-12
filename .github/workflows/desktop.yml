@@ -1,9 +1,9 @@
 # Builds the desktop app: web export → Electron installers.
 #
 #   • Tag push (v*) or manual run builds everything.
-#   • Windows installer: Ruxx-Setup-<version>-x64.exe / -arm64.exe
-#   • macOS DMGs: Ruxx-<version>-x64.dmg / -arm64.dmg
-#   • latest.yml + *.blockmap files power auto-updates — upload them to the
+#   • Windows installer: ruxx-stream-setup-<version>-x64.exe / -arm64.exe
+#   • macOS DMGs: ruxx-stream-<version>-x64.dmg / -arm64.dmg
+#   • latest*.yml + *.blockmap files power auto-updates — upload them to the
 #     site's /downloads folder together with the installers.
 #
 # Deployment to https://app.ruxxdigital.name.ng/downloads is a separate,
@@ -22,9 +22,9 @@ jobs:
     name: Export web bundle
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -44,7 +44,7 @@ jobs:
           EXPO_PUBLIC_ADSENSE_INTERSTITIAL_SLOT: ${{ secrets.EXPO_PUBLIC_ADSENSE_INTERSTITIAL_SLOT || '' }}
         run: npx expo export --platform web --output-dir dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web-dist
           path: dist
@@ -59,14 +59,14 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: web-dist
           path: dist
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -84,13 +84,13 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.os }}
           path: |
             desktop/release/*.exe
             desktop/release/*.dmg
-            desktop/release/latest.yml
+            desktop/release/latest*.yml
             desktop/release/*.blockmap
           retention-days: 14
 
@@ -100,7 +100,7 @@ jobs:
     needs: build-desktop
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: out
           pattern: desktop-*
@@ -125,7 +125,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
           scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
-            out/*.exe out/*.dmg out/latest.yml out/*.blockmap \
+            out/*.exe out/*.dmg out/latest*.yml out/*.blockmap \
             "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}"
 
       - name: Skipped (no deploy secrets)
@@ -134,3 +134,35 @@ jobs:
           echo "No RUXX_DEPLOY_HOST secret set — installers are attached to"
           echo "this workflow run only. Copy them into the site's /downloads"
           echo "folder manually, or set the deploy secrets."
+
+  # Permanent download links for the website: pushing a tag (v1.0.0) builds
+  # everything and attaches the installers to a GitHub Release, giving stable
+  # URLs such as
+  #   https://github.com/Victorr204/ruxx-stream/releases/download/v1.0.0/ruxx-stream-setup-1.0.0-x64.exe
+  release:
+    name: Attach installers to a GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          pattern: desktop-*
+          merge-multiple: true
+
+      - name: Create the release and upload the installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # create is a no-op failure on re-runs when the release already exists;
+        # the upload below then replaces the assets (--clobber).
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "Ruxx Stream $GITHUB_REF_NAME" \
+            --generate-notes \
+            out/* || true
+          gh release upload "$GITHUB_REF_NAME" out/* --clobber
+

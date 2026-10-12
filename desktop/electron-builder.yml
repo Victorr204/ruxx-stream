@@ -59,6 +59,12 @@ mac:
 
 dmg:
   title: ruxx stream
+  # macOS 26 (Tahoe, what macos-latest runs on) fails to mount the HFS+
+  # sparse images electron-builder builds by default:
+  #   hdiutil: attach failed - no mountable file systems
+  # APFS mounts fine, is Apple's default since 2017, and the final .dmg is
+  # unchanged (the temp volume only exists while the image is being built).
+  filesystem: APFS
 
 # Auto-update feed: the same /downloads folder the installer links point at
 # (latest.yml + blockmaps must be uploaded next to the installers).
