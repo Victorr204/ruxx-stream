@@ -1,10 +1,41 @@
 # Download links for the website
 
-Paste this into the separate website repo. The installers live next to the
-site under `/downloads` (same origin as `app.ruxxdigital.name.ng`), which is
-also where auto-update checks `latest.yml`.
+Paste this into the separate website repo. Either option below works the same
+way for the visitor: the browser starts the download and **the page never
+navigates away** (GitHub serves release assets with
+`content-disposition: attachment`, so a plain `<a href>` is enough — don't add
+`target="_blank"`, and don't `fetch()` the file, GitHub blocks cross-origin
+reads of ~90 MB files).
 
-## 1. Upload these files after every desktop release
+## 1. Permanent GitHub links (recommended, no server needed)
+
+The release workflow uploads every installer **twice**:
+
+- versioned — `ruxx-stream-setup-1.0.0-x64.exe` (what the app's auto-updater
+  and humans browsing the releases page see)
+- version-less alias — `ruxx-stream-setup-x64.exe`
+
+Link to the **aliases**: `/releases/latest/download/<name>` always redirects to
+the newest release, so these URLs never change and the HTML below never needs
+editing again.
+
+```
+Windows 64-bit          https://github.com/Victorr204/ruxx-stream/releases/latest/download/ruxx-stream-setup-x64.exe
+Windows on ARM          https://github.com/Victorr204/ruxx-stream/releases/latest/download/ruxx-stream-setup-arm64.exe
+macOS (Apple Silicon)   https://github.com/Victorr204/ruxx-stream/releases/latest/download/ruxx-stream-arm64.dmg
+macOS (Intel)           https://github.com/Victorr204/ruxx-stream/releases/latest/download/ruxx-stream-x64.dmg
+```
+
+Pinning a specific build instead: use the versioned files,
+`.../releases/download/v1.0.1/ruxx-stream-setup-1.0.0-x64.exe`.
+
+## 2. Self-hosted on your own server (optional, enables in-app auto-update)
+
+Copying the files next to the site under `/downloads` is what makes the desktop
+app's **auto-updater** work (it polls
+`https://app.ruxxdigital.name.ng/downloads/latest.yml`). Set the
+`RUXX_DEPLOY_HOST/USER/PATH/KEY` repository secrets and the `deploy` job in
+`.github/workflows/desktop.yml` does this automatically on every tag push.
 
 ```
 /downloads/ruxx-stream-setup-<version>-x64.exe   ← Windows (most laptops)
@@ -15,7 +46,7 @@ also where auto-update checks `latest.yml`.
 /downloads/*.blockmap                            ← auto-updater deltas (keep!)
 ```
 
-## 2. Buttons block (plain HTML — works anywhere)
+## 3. Buttons block (plain HTML — works anywhere)
 
 ```html
 <section class="ruxx-downloads" id="download">
@@ -25,24 +56,25 @@ also where auto-update checks `latest.yml`.
     downloads. Premium membership included.
   </p>
 
-  <!-- Shown when JavaScript picks a default (desktop browsers) -->
-  <a class="ruxx-dl-btn" href="/downloads/ruxx-stream-setup-1.0.0-x64.exe"
-     data-os="windows" hidden>
-    <strong>Download for Windows</strong>
-    <span>.exe installer · 64-bit</span>
-  </a>
+  <div class="ruxx-dl-row">
+    <a class="ruxx-dl-btn"
+       href="https://github.com/Victorr204/ruxx-stream/releases/latest/download/ruxx-stream-setup-x64.exe">
+      <strong>Download for Windows</strong>
+      <span>.exe installer · 64-bit</span>
+    </a>
 
-  <a class="ruxx-dl-btn" href="/downloads/ruxx-stream-1.0.0-arm64.dmg"
-     data-os="mac" hidden>
-    <strong>Download for macOS</strong>
-    <span>.dmg · Apple Silicon (M1–M4)</span>
-  </a>
+    <a class="ruxx-dl-btn"
+       href="https://github.com/Victorr204/ruxx-stream/releases/latest/download/ruxx-stream-arm64.dmg">
+      <strong>Download for macOS</strong>
+      <span>.dmg · Apple Silicon (M1–M4)</span>
+    </a>
+  </div>
 
-  <a class="ruxx-dl-btn" href="/downloads/ruxx-stream-1.0.0-x64.dmg"
-     data-os="mac-intel" hidden>
-    <strong>Download for macOS (Intel)</strong>
-    <span>.dmg · Intel Macs</span>
-  </a>
+  <details class="ruxx-dl-more">
+    <summary>Other versions</summary>
+    <a href="https://github.com/Victorr204/ruxx-stream/releases/latest/download/ruxx-stream-setup-arm64.exe">Windows on ARM (Snapdragon)</a>
+    <a href="https://github.com/Victorr204/ruxx-stream/releases/latest/download/ruxx-stream-x64.dmg">macOS · Intel</a>
+  </details>
 
   <p class="ruxx-dl-help">
     <strong>Windows:</strong> if SmartScreen says “Windows protected your PC”,
@@ -52,43 +84,44 @@ also where auto-update checks `latest.yml`.
   </p>
 </section>
 
-<script>
-  (function () {
-    var ua = navigator.userAgent;
-    var isWin = /Windows/i.test(ua);
-    var isMac = /Macintosh|Mac OS X/i.test(ua);
-    // Apple Silicon vs Intel (rough but good enough for a default button).
-    var isAppleSilicon = isMac &&
-      (/Macintosh/i.test(ua) && navigator.maxTouchPoints === 0) &&
-      !/Intel/i.test(ua) && (navigator.userAgentData?.platform === "macOS");
-    document.querySelectorAll(".ruxx-dl-btn").forEach(function (btn) {
-      var os = btn.getAttribute("data-os");
-      if ((os === "windows" && isWin) ||
-          (os === "mac" && isMac) ||
-          (os === "mac-intel" && isMac)) {
-        btn.hidden = false;
-      }
-    });
-  })();
-</script>
-
 <style>
-  .ruxx-downloads { text-align: center; padding: 2.5rem 1rem; }
+  .ruxx-dl-row { display: flex; gap: .75rem; flex-wrap: wrap; }
   .ruxx-dl-btn {
-    display: inline-block; margin: .5rem; padding: .9rem 1.6rem;
-    border-radius: 12px; background: #e8b84a; color: #111;
-    text-decoration: none; min-width: 220px;
+    display: block; padding: .95rem 1.6rem; border-radius: 14px;
+    background: linear-gradient(135deg, #f0c75e, #d4a030); color: #111;
+    text-decoration: none; font-weight: 800; min-width: 220px;
+    box-shadow: 0 8px 24px rgba(232, 184, 74, .35);
+    transition: transform .15s ease;
   }
-  .ruxx-dl-btn span { display: block; font-size: .8rem; opacity: .75; }
+  .ruxx-dl-btn:hover { transform: translateY(-2px); }
+  .ruxx-dl-btn span { display: block; font-size: .8rem; font-weight: 600; opacity: .75; }
+  .ruxx-dl-more { margin-top: .9rem; font-size: .9rem; }
+  .ruxx-dl-more summary { cursor: pointer; color: #b98c1e; font-weight: 700; }
+  .ruxx-dl-more a { display: block; padding: .4rem 0; color: #b98c1e; }
   .ruxx-dl-help { margin-top: 1.25rem; font-size: .85rem; opacity: .7; }
 </style>
+
+<script>
+  // "Starting download…" feedback + optional counter — never preventDefault,
+  // so the download always starts and the page stays put.
+  document.querySelectorAll(".ruxx-dl-btn").forEach(function (a) {
+    a.addEventListener("click", function () {
+      var strong = a.querySelector("strong");
+      if (!strong) return;
+      var label = strong.textContent;
+      strong.textContent = "Starting download…";
+      setTimeout(function () { strong.textContent = label; }, 5000);
+      // Optional: count installs
+      // navigator.sendBeacon("/api/downloads", JSON.stringify({ file: a.href.split("/").pop() }));
+    });
+  });
+</script>
 ```
 
-## 3. Optional: detect the OS automatically
-
-The snippet above reveals the matching button per OS and keeps the others as
-fallback links. If your site has a framework, just render the right `href`
-from `navigator.userAgent` / `navigator.platform`.
+Both primary buttons are always visible (a phone can legitimately want either).
+If you'd rather auto-pick, reveal only the matching `data-os` button from
+`navigator.userAgentData?.platform` — but note browsers cannot distinguish
+Apple Silicon from Intel, so the Apple Silicon DMG is the sensible default.
 
 ## 4. What happens inside the app
 
@@ -99,6 +132,6 @@ from `navigator.userAgent` / `navigator.platform`.
   Premium checkout (Paystack opens in the user's default browser).
 - **Premium members** stream ad-free and can save titles offline
   (encrypted at rest).
-- The app **auto-updates** itself from these `/downloads` files — always
-  upload `latest.yml` and the `.blockmap` files together with the installers,
-  and never rename the files (electron-builder's names are the expected ones).
+- The app **auto-updates** itself — but only from the `/downloads` files in
+  option 2. Without those, installed copies stay on the version they were
+  downloaded with.
