@@ -44,27 +44,38 @@ const THEME_OPTIONS = [
 
 function StatCard({ label, value }) {
   const { theme } = useTheme();
+  const isDesktop = useIsDesktop();
   return (
-    <View style={[styles.statCard, { backgroundColor: theme.card }]}>
-      <Text style={[styles.statValue, { color: GOLD }]} numberOfLines={1}>
+    <View style={[styles.statCard, { backgroundColor: theme.card }, isDesktop && styles.statCardWide]}>
+      <Text style={[styles.statValue, { color: GOLD }, isDesktop && styles.statValueWide]} numberOfLines={1}>
         {value}
       </Text>
-      <Text style={[styles.statLabel, { color: theme.subtitle }]}>{label}</Text>
+      <Text style={[styles.statLabel, { color: theme.subtitle }, isDesktop && styles.statLabelWide]}>{label}</Text>
     </View>
   );
 }
 
 function Row({ icon, label, value, onPress, right, danger }) {
   const { theme } = useTheme();
+  const isDesktop = useIsDesktop();
+  const [hovered, setHovered] = useState(false);
   const content = (
     <>
-      <View style={[styles.rowIcon, { backgroundColor: danger ? "rgba(239,68,68,0.12)" : "rgba(232,184,74,0.10)" }]}>
+      <View
+        style={[
+          styles.rowIcon,
+          { backgroundColor: danger ? "rgba(239,68,68,0.12)" : "rgba(232,184,74,0.10)" },
+          isDesktop && styles.rowIconWide,
+        ]}
+      >
         <Ionicons name={icon} size={17} color={danger ? "#ef4444" : GOLD} />
       </View>
       <View style={styles.rowBody}>
-        <Text style={[styles.rowLabel, { color: danger ? "#ef4444" : theme.text }]}>{label}</Text>
+        <Text style={[styles.rowLabel, { color: danger ? "#ef4444" : theme.text }, isDesktop && styles.rowLabelWide]}>
+          {label}
+        </Text>
         {value ? (
-          <Text style={[styles.rowValue, { color: theme.subtitle }]} numberOfLines={1}>
+          <Text style={[styles.rowValue, { color: theme.subtitle }, isDesktop && styles.rowValueWide]} numberOfLines={1}>
             {value}
           </Text>
         ) : null}
@@ -73,11 +84,23 @@ function Row({ icon, label, value, onPress, right, danger }) {
     </>
   );
 
-  if (!onPress) return <View style={[styles.row, { backgroundColor: theme.card }]}>{content}</View>;
+  const rowStyle = [
+    styles.row,
+    { backgroundColor: theme.card },
+    isDesktop && styles.rowWide,
+    isDesktop && hovered && onPress && styles.rowHovered,
+  ];
+  const hoverHandlers =
+    isDesktop && onPress
+      ? { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) }
+      : {};
+
+  if (!onPress) return <View style={rowStyle}>{content}</View>;
 
   return (
     <TouchableOpacity
-      style={[styles.row, { backgroundColor: theme.card }]}
+      style={rowStyle}
+      {...hoverHandlers}
       onPress={onPress}
       activeOpacity={0.7}
       accessibilityRole="button"
@@ -105,6 +128,8 @@ export default function Profile() {
   const [notifGranted, setNotifGranted] = useState(false);
   const [notifBusy, setNotifBusy] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
+  const [saveHover, setSaveHover] = useState(false);
+  const [signOutHover, setSignOutHover] = useState(false);
 
   const { reference: referenceParam } = useLocalSearchParams();
 
@@ -311,7 +336,10 @@ export default function Profile() {
         </Animated.Text>
 
         {/* ── Identity card ── */}
-        <Animated.View entering={FadeInDown.delay(80).duration(450)} style={[styles.identity, { backgroundColor: theme.card }]}>
+        <Animated.View
+          entering={FadeInDown.delay(80).duration(450)}
+          style={[styles.identity, { backgroundColor: theme.card }, isDesktop && styles.identityWide]}
+        >
           <LinearGradient
             colors={isPremium ? GOLD_GRADIENT : ["rgba(232,184,74,0.35)", "rgba(232,184,74,0.12)"]}
             style={styles.avatarRing}
@@ -323,10 +351,10 @@ export default function Profile() {
             </View>
           </LinearGradient>
 
-          <Text style={[styles.name, { color: theme.text }]} numberOfLines={1}>
+          <Text style={[styles.name, { color: theme.text }, isDesktop && styles.nameWide]} numberOfLines={1}>
             {displayName || "Movie fan"}
           </Text>
-          <Text style={[styles.email, { color: theme.subtitle }]} numberOfLines={1}>
+          <Text style={[styles.email, { color: theme.subtitle }, isDesktop && styles.emailWide]} numberOfLines={1}>
             {email}
           </Text>
 
@@ -353,26 +381,26 @@ export default function Profile() {
         </Animated.View>
 
         {/* ── Stats ── */}
-        <Animated.View entering={FadeInDown.delay(160).duration(450)} style={styles.statsRow}>
+        <Animated.View entering={FadeInDown.delay(160).duration(450)} style={[styles.statsRow, isDesktop && styles.statsRowWide]}>
           <StatCard label="Plan" value={isPremium ? "Premium" : "Free"} />
           <StatCard label="Member since" value={memberSince} />
           <StatCard label="Status" value={session?.user?.email_confirmed_at ? "Verified" : "Pending"} />
         </Animated.View>
 
         {/* ── Account ── */}
-        <Animated.Text entering={FadeInDown.delay(240).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }]}>
+        <Animated.Text entering={FadeInDown.delay(240).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }, isDesktop && styles.sectionTitleWide]}>
           Account
         </Animated.Text>
 
         {editing ? (
-          <View style={[styles.editCard, { backgroundColor: theme.card, borderColor: GOLD }]}>
+          <View style={[styles.editCard, { backgroundColor: theme.card, borderColor: GOLD }, isDesktop && styles.editCardWide]}>
             <Text style={[styles.fieldLabel, { color: theme.subtitle }]}>Display name</Text>
             <TextInput
               value={draftName}
               onChangeText={setDraftName}
               placeholder="Your name"
               placeholderTextColor={theme.placeholder}
-              style={[styles.editInput, { color: theme.inputText, backgroundColor: theme.inputBackground, borderColor: theme.inputBorder }]}
+              style={[styles.editInput, { color: theme.inputText, backgroundColor: theme.inputBackground, borderColor: theme.inputBorder }, isDesktop && styles.editInputWide]}
               autoCapitalize="words"
               autoFocus
               returnKeyType="done"
@@ -380,13 +408,19 @@ export default function Profile() {
             />
             <View style={styles.editActions}>
               <TouchableOpacity
-                style={[styles.editBtn, { borderColor: theme.inputBorder }]}
+                style={[styles.editBtn, { borderColor: theme.inputBorder }, isDesktop && styles.editBtnWide]}
                 onPress={() => setEditing(false)}
                 disabled={saving}
               >
                 <Text style={[styles.editBtnText, { color: theme.subtitle }]}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.editBtnPrimary} onPress={saveName} disabled={saving}>
+              <TouchableOpacity
+                style={[styles.editBtnPrimary, isDesktop && styles.editBtnWide, isDesktop && saveHover && styles.editBtnPrimaryHover]}
+                onPress={saveName}
+                disabled={saving}
+                onMouseEnter={isDesktop ? () => setSaveHover(true) : undefined}
+                onMouseLeave={isDesktop ? () => setSaveHover(false) : undefined}
+              >
                 {saving ? (
                   <ActivityIndicator color="#111" size="small" />
                 ) : (
@@ -427,17 +461,17 @@ export default function Profile() {
         )}
 
         {/* ── Appearance ── */}
-        <Animated.Text entering={FadeInDown.delay(310).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }]}>
+        <Animated.Text entering={FadeInDown.delay(310).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }, isDesktop && styles.sectionTitleWide]}>
           Appearance
         </Animated.Text>
         <Animated.View entering={FadeInDown.delay(350).duration(450)} style={{ gap: 10 }}>
-          <View style={[styles.themeRow, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+          <View style={[styles.themeRow, { backgroundColor: theme.card, borderColor: theme.cardBorder }, isDesktop && styles.themeRowWide]}>
             {THEME_OPTIONS.map((option) => {
               const active = mode === option.key;
               return (
                 <TouchableOpacity
                   key={option.key}
-                  style={[styles.themeChip, active && { backgroundColor: GOLD }]}
+                  style={[styles.themeChip, isDesktop && styles.themeChipWide, active && { backgroundColor: GOLD }]}
                   onPress={() => setMode(option.key)}
                   activeOpacity={0.8}
                   accessibilityRole="button"
@@ -445,7 +479,7 @@ export default function Profile() {
                   accessibilityLabel={`Theme: ${option.label}`}
                 >
                   <Ionicons name={option.icon} size={14} color={active ? "#111" : theme.subtitle} />
-                  <Text style={[styles.themeChipText, { color: active ? "#111" : theme.subtitle }]}>
+                  <Text style={[styles.themeChipText, { color: active ? "#111" : theme.subtitle }, isDesktop && styles.themeChipTextWide]}>
                     {option.label}
                   </Text>
                 </TouchableOpacity>
@@ -455,7 +489,7 @@ export default function Profile() {
         </Animated.View>
 
         {/* ── Membership ── */}
-        <Animated.Text entering={FadeInDown.delay(390).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }]}>
+        <Animated.Text entering={FadeInDown.delay(390).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }, isDesktop && styles.sectionTitleWide]}>
           Membership
         </Animated.Text>
         <Animated.View entering={FadeInDown.delay(430).duration(450)} style={{ gap: 10 }}>
@@ -484,7 +518,7 @@ export default function Profile() {
         </Animated.View>
 
         {/* ── Support ── */}
-        <Animated.Text entering={FadeInDown.delay(455).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }]}>
+        <Animated.Text entering={FadeInDown.delay(455).duration(450)} style={[styles.sectionTitle, { color: theme.placeholder }, isDesktop && styles.sectionTitleWide]}>
           Support
         </Animated.Text>
         <Animated.View entering={FadeInDown.delay(470).duration(450)} style={{ gap: 10 }}>
@@ -517,12 +551,18 @@ export default function Profile() {
         )}
 
         {/* ── Sign out ── */}
-        <Animated.View entering={FadeInDown.delay(520).duration(450)} style={styles.signOutWrap}>
-          <TouchableOpacity style={styles.signOutBtn} onPress={handleSignOut} activeOpacity={0.8}>
+        <Animated.View entering={FadeInDown.delay(520).duration(450)} style={[styles.signOutWrap, isDesktop && styles.signOutWrapWide]}>
+          <TouchableOpacity
+            style={[styles.signOutBtn, isDesktop && styles.signOutBtnWide, isDesktop && signOutHover && styles.signOutBtnHover]}
+            onPress={handleSignOut}
+            onMouseEnter={isDesktop ? () => setSignOutHover(true) : undefined}
+            onMouseLeave={isDesktop ? () => setSignOutHover(false) : undefined}
+            activeOpacity={0.8}
+          >
             <Ionicons name="log-out-outline" size={18} color="#ef4444" />
-            <Text style={styles.signOutText}>Sign Out</Text>
+            <Text style={[styles.signOutText, isDesktop && styles.signOutTextWide]}>Sign Out</Text>
           </TouchableOpacity>
-          <Text style={[styles.version, { color: theme.placeholder }]}>ruxx stream • v1.0.0</Text>
+          <Text style={[styles.version, { color: theme.placeholder }, isDesktop && styles.versionWide]}>ruxx stream • v1.0.0</Text>
         </Animated.View>
       </ScrollView>
     </SafeAreaView>
@@ -532,10 +572,18 @@ export default function Profile() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   scroll: { padding: 20, paddingBottom: 40, gap: 14 },
-  scrollWide: { padding: 32, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
+  scrollWide: {
+    paddingHorizontal: 40,
+    paddingTop: 24,
+    paddingBottom: 48,
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    width: "100%",
+    gap: 20,
+  },
 
   header: { fontSize: 28, fontWeight: "900", letterSpacing: -0.5, marginBottom: 2 },
-  headerWide: { fontSize: 32 },
+  headerWide: { fontSize: 30, marginBottom: 4 },
 
   identity: {
     borderRadius: 22,
@@ -548,6 +596,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 3,
   },
+  identityWide: { borderRadius: 24, paddingVertical: 32, paddingHorizontal: 40 },
   avatarRing: {
     width: 92,
     height: 92,
@@ -566,7 +615,9 @@ const styles = StyleSheet.create({
   },
   avatarText: { fontSize: 30, fontWeight: "900" },
   name: { fontSize: 20, fontWeight: "800" },
+  nameWide: { fontSize: 22 },
   email: { fontSize: 13 },
+  emailWide: { fontSize: 13.5 },
 
   planChip: {
     flexDirection: "row",
@@ -590,9 +641,13 @@ const styles = StyleSheet.create({
   adminText: { fontSize: 11, fontWeight: "700", color: "#3b82f6" },
 
   statsRow: { flexDirection: "row", gap: 10 },
+  statsRowWide: { gap: 14 },
   statCard: { flex: 1, borderRadius: 14, padding: 14, alignItems: "center", gap: 4 },
+  statCardWide: { borderRadius: 16, paddingVertical: 18, paddingHorizontal: 20, gap: 5 },
   statValue: { fontSize: 15, fontWeight: "800" },
+  statValueWide: { fontSize: 17 },
   statLabel: { fontSize: 11, textAlign: "center" },
+  statLabelWide: { fontSize: 12 },
 
   sectionTitle: {
     fontSize: 11.5,
@@ -602,6 +657,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginLeft: 2,
   },
+  sectionTitleWide: { fontSize: 12.5, marginTop: 12, marginLeft: 4, letterSpacing: 1 },
 
   row: {
     flexDirection: "row",
@@ -610,12 +666,18 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 14,
   },
+  rowWide: { borderRadius: 18, padding: 18, gap: 16 },
+  rowHovered: { opacity: 0.9 },
   rowIcon: { width: 36, height: 36, borderRadius: 11, alignItems: "center", justifyContent: "center" },
+  rowIconWide: { width: 40, height: 40, borderRadius: 13 },
   rowBody: { flex: 1, gap: 2 },
   rowLabel: { fontSize: 14.5, fontWeight: "700" },
+  rowLabelWide: { fontSize: 15.5 },
   rowValue: { fontSize: 12 },
+  rowValueWide: { fontSize: 12.5 },
 
   editCard: { borderRadius: 16, padding: 16, borderWidth: 1, gap: 10 },
+  editCardWide: { borderRadius: 18, padding: 20, gap: 12 },
   fieldLabel: { fontSize: 11.5, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.6 },
   editInput: {
     borderWidth: 1.5,
@@ -624,6 +686,7 @@ const styles = StyleSheet.create({
     height: 48,
     fontSize: 15,
   },
+  editInputWide: { height: 50, fontSize: 15.5, paddingHorizontal: 16 },
   editActions: { flexDirection: "row", gap: 10 },
   editBtn: {
     flex: 1,
@@ -633,6 +696,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  editBtnWide: { height: 48, borderRadius: 14 },
   editBtnText: { fontSize: 14, fontWeight: "700" },
   editBtnPrimary: {
     flex: 1,
@@ -642,9 +706,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  editBtnPrimaryHover: { opacity: 0.88 },
   editBtnPrimaryText: { fontSize: 14, fontWeight: "800", color: "#111" },
 
   signOutWrap: { marginTop: 18, gap: 12 },
+  signOutWrapWide: { marginTop: 28 },
   signOutBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -656,8 +722,12 @@ const styles = StyleSheet.create({
     borderColor: "rgba(239,68,68,0.45)",
     backgroundColor: "rgba(239,68,68,0.08)",
   },
+  signOutBtnWide: { height: 52, borderRadius: 16, gap: 10 },
+  signOutBtnHover: { backgroundColor: "rgba(239,68,68,0.16)", borderColor: "rgba(239,68,68,0.75)" },
   signOutText: { fontSize: 15, fontWeight: "800", color: "#ef4444" },
+  signOutTextWide: { fontSize: 16 },
   version: { fontSize: 11, textAlign: "center" },
+  versionWide: { fontSize: 12 },
 
   themeRow: {
     flexDirection: "row",
@@ -666,6 +736,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 5,
   },
+  themeRowWide: { borderRadius: 16, padding: 6, gap: 8 },
   themeChip: {
     flex: 1,
     flexDirection: "row",
@@ -675,5 +746,7 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     borderRadius: 10,
   },
+  themeChipWide: { paddingVertical: 12, borderRadius: 12 },
   themeChipText: { fontSize: 12, fontWeight: "800" },
+  themeChipTextWide: { fontSize: 13 },
 });

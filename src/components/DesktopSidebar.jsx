@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { router, usePathname } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -5,17 +6,33 @@ import { GOLD, useTheme } from "../../context/ThemeContext";
 import Logos from "../../assets/images/backlogo-transparent.png";
 import { SIDEBAR_WIDTH } from "../hooks/useIsDesktop";
 
-const NAV_ITEMS = [
-  { href: "/home", label: "Home", icon: "home-outline", activeIcon: "home" },
-  { href: "/search", label: "Search", icon: "search-outline", activeIcon: "search" },
-  { href: "/mylist", label: "My List", icon: "bookmark-outline", activeIcon: "bookmark" },
-  { href: "/downloads", label: "Downloads", icon: "download-outline", activeIcon: "download" },
-  { href: "/profile", label: "Profile", icon: "person-outline", activeIcon: "person" },
+// Grouped the way a desktop app groups things: short labelled sections with
+// generous hit targets instead of one flat list.
+const SECTIONS = [
+  {
+    label: "Browse",
+    items: [
+      { href: "/home", label: "Home", icon: "home-outline", activeIcon: "home" },
+      { href: "/search", label: "Search", icon: "search-outline", activeIcon: "search" },
+    ],
+  },
+  {
+    label: "Library",
+    items: [
+      { href: "/mylist", label: "My List", icon: "bookmark-outline", activeIcon: "bookmark" },
+      { href: "/downloads", label: "Downloads", icon: "download-outline", activeIcon: "download" },
+    ],
+  },
+  {
+    label: "Account",
+    items: [{ href: "/profile", label: "Profile", icon: "person-outline", activeIcon: "person" }],
+  },
 ];
 
 export default function DesktopSidebar() {
   const { theme } = useTheme();
   const pathname = usePathname();
+  const [hovered, setHovered] = useState(null);
 
   return (
     <View style={[styles.root, { backgroundColor: theme.card, borderRightColor: theme.cardBorder }]}>
@@ -28,32 +45,43 @@ export default function DesktopSidebar() {
         </Text>
       </View>
 
-      <View style={styles.nav}>
-        {NAV_ITEMS.map((item) => {
-          const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-          return (
-            <TouchableOpacity
-              key={item.href}
-              style={[styles.item, active && styles.itemActive]}
-              onPress={() => router.push(item.href)}
-              activeOpacity={0.8}
-              accessible
-              accessibilityRole="link"
-              accessibilityState={{ selected: active }}
-              accessibilityLabel={item.label}
-            >
-              <Ionicons name={active ? item.activeIcon : item.icon} size={20} color={active ? GOLD : theme.subtitle} />
-              <Text style={[styles.label, { color: active ? GOLD : theme.text }, active && styles.labelActive]}>
-                {item.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
+      <View style={styles.sections}>
+        {SECTIONS.map((section) => (
+          <View key={section.label} style={styles.section}>
+            <Text style={[styles.sectionLabel, { color: theme.placeholder }]}>{section.label}</Text>
+            {section.items.map((item) => {
+              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              const isHovered = hovered === item.href;
+              return (
+                <TouchableOpacity
+                  key={item.href}
+                  style={[
+                    styles.item,
+                    { backgroundColor: active ? "rgba(232,184,74,0.10)" : isHovered ? "rgba(255,255,255,0.05)" : "transparent" },
+                  ]}
+                  onPress={() => router.push(item.href)}
+                  onMouseEnter={() => setHovered(item.href)}
+                  onMouseLeave={() => setHovered(null)}
+                  activeOpacity={0.8}
+                  accessible
+                  accessibilityRole="link"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={item.label}
+                >
+                  {/* Active marker: a gold rail on the left edge of the pill */}
+                  <View style={[styles.rail, active && styles.railOn]} />
+                  <Ionicons name={active ? item.activeIcon : item.icon} size={18} color={active ? GOLD : theme.subtitle} />
+                  <Text style={[styles.label, { color: active ? GOLD : theme.text }]}>{item.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        ))}
       </View>
 
-      <View style={styles.footer}>
-        <View style={[styles.tick, { backgroundColor: GOLD }]} />
-        <Text style={[styles.footerText, { color: theme.placeholder }]}>ruxx stream</Text>
+      <View style={[styles.footer, { borderTopColor: theme.cardBorder }]}>
+        <View style={styles.tick} />
+        <Text style={[styles.footerText, { color: theme.placeholder }]}>Ruxx Digital Services</Text>
       </View>
     </View>
   );
@@ -64,48 +92,71 @@ const styles = StyleSheet.create({
     width: SIDEBAR_WIDTH,
     flexShrink: 0,
     borderRightWidth: StyleSheet.hairlineWidth,
-    paddingTop: 28,
-    paddingBottom: 24,
-    paddingHorizontal: 16,
+    paddingTop: 26,
+    paddingBottom: 20,
+    paddingHorizontal: 14,
   },
   brandRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 11,
     paddingHorizontal: 8,
-    marginBottom: 32,
+    marginBottom: 26,
   },
   logoRing: {
     width: 34,
     height: 34,
-    borderRadius: 17,
+    borderRadius: 12,
     borderWidth: 1.5,
-    borderColor: GOLD,
+    borderColor: "rgba(232,184,74,0.55)",
+    backgroundColor: "rgba(232,184,74,0.08)",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
   },
   logo: { width: 22, height: 22 },
-  brand: { fontSize: 15, fontWeight: "900", letterSpacing: -0.3 },
-  nav: { flex: 1, gap: 4 },
+  brand: { fontSize: 16, fontWeight: "900", letterSpacing: -0.3 },
+
+  sections: { flex: 1, gap: 22 },
+  section: { gap: 3 },
+  sectionLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1.6,
+    textTransform: "uppercase",
+    paddingHorizontal: 10,
+    marginBottom: 7,
+  },
+
   item: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 11,
     paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 10,
+    paddingVertical: 11,
+    borderRadius: 11,
+    overflow: "hidden",
   },
-  itemActive: { backgroundColor: "rgba(232,184,74,0.08)" },
+  rail: {
+    position: "absolute",
+    left: 0,
+    top: "25%",
+    bottom: "25%",
+    width: 3,
+    borderRadius: 3,
+    backgroundColor: "transparent",
+  },
+  railOn: { backgroundColor: GOLD },
   label: { fontSize: 13.5, fontWeight: "700", letterSpacing: 0.2 },
-  labelActive: { fontWeight: "800" },
+
   footer: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingHorizontal: 12,
-    marginTop: 16,
+    paddingHorizontal: 10,
+    paddingTop: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
-  tick: { width: 3, height: 11, borderRadius: 2 },
-  footerText: { fontSize: 10.5, fontWeight: "800", letterSpacing: 1.4, textTransform: "uppercase" },
+  tick: { width: 3, height: 11, borderRadius: 2, backgroundColor: GOLD },
+  footerText: { fontSize: 9.5, fontWeight: "800", letterSpacing: 1.2, textTransform: "uppercase" },
 });

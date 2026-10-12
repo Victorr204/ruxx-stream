@@ -5,6 +5,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Image,
+  ScrollView,
   Dimensions,
   StatusBar,
 } from "react-native";
@@ -25,6 +26,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import Logos from "../assets/images/backlogo-transparent.png";
 import { useTheme } from "../context/ThemeContext";
+import { useIsDesktop } from "../src/hooks/useIsDesktop";
 import { getBootSession } from "../utils/bootSession";
 import { useAuthStore } from "../src/stores/auth";
 
@@ -90,6 +92,7 @@ function GlowOrb({ color, size, top, left, right, bottom, delay }) {
 
 export default function Landing() {
   const { theme, resolved } = useTheme();
+  const isDesktop = useIsDesktop();
 
   // Returning users can still open on "/" when the launch URL prefetch wins
   // over the boot gate's initialRouteName — hand off to the screen the boot
@@ -138,6 +141,11 @@ export default function Landing() {
   // Never paint the landing on a warm start — the boot gate already picked
   // the real first screen, showing this first just adds a dead frame.
   if (rerouting) return null;
+
+  // Desktop gets its own composition: the mobile stack (hero → card row →
+  // CTA) reads as a phone screen stretched to 1440px, so on wide windows it
+  // becomes a two-column hero inside a max-width container.
+  if (isDesktop) return <DesktopLanding />;
 
   return (
     <View style={[styles.root, { backgroundColor: theme.background }]}>
@@ -413,4 +421,291 @@ const styles = StyleSheet.create({
 
   footer: { fontSize: 11, textAlign: "center", marginTop: 4 },
   footerLink: { color: "#e8b84a", fontWeight: "700" },
+
+  /* Desktop landing */
+  dRoot: { flex: 1, overflow: "hidden", backgroundColor: "#0a0a0a" },
+  dScroll: {
+    flexGrow: 1,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
+    paddingHorizontal: 64,
+    paddingTop: 56,
+    paddingBottom: 40,
+    justifyContent: "space-between",
+  },
+  dHero: { flexDirection: "row", alignItems: "center", gap: 72 },
+  dLeft: { flex: 1.15, maxWidth: 620 },
+  dRight: { flex: 1, gap: 12, minWidth: 0 },
+
+  dLogoRing: {
+    width: 86,
+    height: 86,
+    borderRadius: 28,
+    borderWidth: 1.5,
+    borderColor: "rgba(232,184,74,0.5)",
+    backgroundColor: "rgba(232,184,74,0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 26,
+    shadowColor: "#e8b84a",
+    shadowOpacity: 0.5,
+    shadowRadius: 30,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+  },
+  dLogo: { width: 60, height: 60 },
+
+  dBrand: {
+    fontSize: 62,
+    lineHeight: 66,
+    fontWeight: "900",
+    color: "#fff",
+    letterSpacing: -2.2,
+    marginBottom: 12,
+  },
+  dTag: {
+    fontSize: 18,
+    lineHeight: 27,
+    color: "rgba(255,255,255,0.62)",
+    fontWeight: "500",
+    maxWidth: 520,
+    marginBottom: 26,
+    letterSpacing: 0.1,
+  },
+
+  dChipRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 36 },
+  dChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 22,
+    borderWidth: 1,
+  },
+  dChipText: { fontSize: 12.5, fontWeight: "700", letterSpacing: 0.3 },
+
+  dCta: { flexDirection: "row", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 24 },
+  dPrimary: {
+    borderRadius: 16,
+    overflow: "hidden",
+    shadowColor: "#e8b84a",
+    shadowOpacity: 0.4,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+  dPrimaryGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, height: 58, paddingHorizontal: 34 },
+  dPrimaryText: { fontSize: 16.5, fontWeight: "800", color: "#111", letterSpacing: 0.2 },
+  dSecondary: {
+    height: 58,
+    paddingHorizontal: 28,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  dSecondaryText: { fontSize: 15, fontWeight: "700", color: "rgba(255,255,255,0.82)" },
+
+  dLegal: { fontSize: 12.5, color: "rgba(255,255,255,0.42)" },
+  dLegalLink: { color: "#e8b84a", fontWeight: "700" },
+
+  dCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+    padding: 18,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.035)",
+  },
+  dCardIcon: { width: 46, height: 46, borderRadius: 15, alignItems: "center", justifyContent: "center" },
+  dCardBody: { flex: 1 },
+  dCardTitle: { fontSize: 15, fontWeight: "800", color: "#fff", letterSpacing: -0.1 },
+  dCardDesc: { fontSize: 13, lineHeight: 18, color: "rgba(255,255,255,0.55)", marginTop: 3 },
+
+  dAbout: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(232,184,74,0.25)",
+    backgroundColor: "rgba(232,184,74,0.06)",
+  },
+  dAboutText: { flex: 1, fontSize: 13, lineHeight: 19.5, color: "rgba(255,255,255,0.68)" },
+
+  dStrip: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 24,
+    flexWrap: "wrap",
+    marginTop: 56,
+    paddingTop: 26,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(255,255,255,0.12)",
+  },
+  dStripLabel: {
+    fontSize: 11.5,
+    fontWeight: "800",
+    letterSpacing: 1.6,
+    textTransform: "uppercase",
+    color: "rgba(255,255,255,0.5)",
+  },
+  dStripPills: { flexDirection: "row", flexWrap: "wrap", gap: 10, justifyContent: "flex-end" },
+  dPill: {
+    paddingHorizontal: 15,
+    paddingVertical: 9,
+    borderRadius: 11,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.09)",
+  },
+  dPillText: { fontSize: 12.5, fontWeight: "700", color: "rgba(255,255,255,0.85)" },
 });
+
+/* ── Desktop landing ──────────────────────────────────────────────────
+   Two columns inside a max-width container: brand + CTAs on the left,
+   the value props on the right, platforms pinned to the bottom. Mobile
+   keeps the stacked composition above untouched.                     */
+function DesktopLanding() {
+  const shimmer = useSharedValue(0);
+
+  useEffect(() => {
+    shimmer.value = withRepeat(
+      withTiming(1, { duration: 2800, easing: Easing.inOut(Easing.ease) }),
+      -1,
+      true
+    );
+  }, [shimmer]);
+
+  const shineStyle = useAnimatedStyle(() => ({
+    opacity: 0.7 + shimmer.value * 0.3,
+  }));
+
+  return (
+    <View style={styles.dRoot}>
+      <LinearGradient
+        colors={["#0a0a0a", "#171208", "#0a0a0a"]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <GlowOrb color="#e8b84a" size={520} top={-200} left={-170} delay={0} />
+      <GlowOrb color="#3b82f6" size={400} top={150} right={-190} delay={800} />
+      <GlowOrb color="#8b5cf6" size={320} bottom={-90} left={540} delay={1600} />
+
+      <ScrollView contentContainerStyle={styles.dScroll} showsVerticalScrollIndicator={false}>
+        <View style={styles.dHero}>
+          {/* ── Left: brand + actions ── */}
+          <Animated.View entering={FadeInDown.duration(700)} style={styles.dLeft}>
+            <Animated.View style={[styles.dLogoRing, shineStyle]}>
+              <Image source={Logos} style={styles.dLogo} resizeMode="contain" />
+            </Animated.View>
+
+            <Animated.Text entering={FadeInDown.delay(150).duration(600)} style={styles.dBrand}>
+              ruxx stream
+            </Animated.Text>
+            <Animated.Text entering={FadeInDown.delay(300).duration(600)} style={styles.dTag}>
+              Movies, Series &amp; Blockbusters — streamed instantly, on every screen you own.
+            </Animated.Text>
+
+            <Animated.View entering={FadeInDown.delay(450).duration(600)} style={styles.dChipRow}>
+              {SERVICES.map((s) => (
+                <View
+                  key={s.label}
+                  style={[styles.dChip, { borderColor: `${s.color}55`, backgroundColor: `${s.color}14` }]}
+                >
+                  <Ionicons name={s.icon} size={14} color={s.color} />
+                  <Text style={[styles.dChipText, { color: s.color }]}>{s.label}</Text>
+                </View>
+              ))}
+            </Animated.View>
+
+            <Animated.View entering={FadeInUp.delay(620).duration(600)} style={styles.dCta}>
+              <TouchableOpacity
+                style={styles.dPrimary}
+                onPress={() => router.push("/register")}
+                activeOpacity={0.88}
+                accessibilityRole="button"
+                accessibilityLabel="Get started"
+              >
+                <LinearGradient
+                  colors={["#f0c75e", "#e8b84a", "#d4a030"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.dPrimaryGrad}
+                >
+                  <Text style={styles.dPrimaryText}>Start Watching</Text>
+                  <Ionicons name="arrow-forward" size={18} color="#111" />
+                </LinearGradient>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.dSecondary}
+                onPress={() => router.push("/login")}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel="Sign in"
+              >
+                <Text style={styles.dSecondaryText}>I already have an account</Text>
+              </TouchableOpacity>
+            </Animated.View>
+
+            <Animated.Text entering={FadeIn.delay(900).duration(600)} style={styles.dLegal}>
+              By continuing you agree to our{" "}
+              <Text style={styles.dLegalLink} onPress={() => router.push("/terms")} accessibilityRole="link">
+                Terms
+              </Text>
+              {" & "}
+              <Text style={styles.dLegalLink} onPress={() => router.push("/privacy")} accessibilityRole="link">
+                Privacy Policy
+              </Text>
+            </Animated.Text>
+          </Animated.View>
+
+          {/* ── Right: what you get ── */}
+          <Animated.View entering={FadeInUp.delay(360).duration(700)} style={styles.dRight}>
+            {HIGHLIGHTS.map((h) => (
+              <View key={h.title} style={styles.dCard}>
+                <View style={[styles.dCardIcon, { backgroundColor: `${h.color}1f` }]}>
+                  <Ionicons name={h.icon} size={20} color={h.color} />
+                </View>
+                <View style={styles.dCardBody}>
+                  <Text style={styles.dCardTitle}>{h.title}</Text>
+                  <Text style={styles.dCardDesc}>{h.desc}</Text>
+                </View>
+              </View>
+            ))}
+
+            <View style={styles.dAbout}>
+              <Ionicons name="information-circle-outline" size={16} color="#e8b84a" />
+              <Text style={styles.dAboutText}>
+                ruxx stream is a movie streaming platform for films, series &amp; documentaries across mobile, web,
+                desktop and Android TV. Operated by Ruxx Digital Services.
+              </Text>
+            </View>
+          </Animated.View>
+        </View>
+
+        {/* ── Bottom strip ── */}
+        <Animated.View entering={FadeIn.delay(1150).duration(600)} style={styles.dStrip}>
+          <Text style={styles.dStripLabel}>Watch on every screen you own</Text>
+          <View style={styles.dStripPills}>
+            {["Windows", "macOS", "Android", "iOS", "Web", "Android TV"].map((n) => (
+              <View key={n} style={styles.dPill}>
+                <Text style={styles.dPillText}>{n}</Text>
+              </View>
+            ))}
+          </View>
+        </Animated.View>
+      </ScrollView>
+    </View>
+  );
+}

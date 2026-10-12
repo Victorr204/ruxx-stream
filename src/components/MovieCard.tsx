@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { GOLD, useTheme } from "../../context/ThemeContext";
+import { useContentWidth, useIsDesktop } from "../hooks/useIsDesktop";
 import type { Movie } from "../lib/types";
 
 type Props = {
@@ -17,12 +18,38 @@ type Props = {
 const NEW_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 const SESSION_START_MS = Date.now();
 
+const CARD_W_MOBILE = 124;
+/** Desktop tile width at CONTENT_MAX_WIDTH — ~6.7 posters across a 1280px row. */
+const CARD_W_DESKTOP = 168;
+/** Narrow desktop windows (1024px) still need tiles bigger than the mobile one. */
+const CARD_W_DESKTOP_MIN = 150;
+const DESKTOP_GUTTERS = 40; // each side — matches MovieRow's desktop padding
+const DESKTOP_PER_ROW = 6.67;
+const DESKTOP_TILE_GAP = 12; // mirrors styles.wrap's marginRight
+
+/**
+ * Poster width for a desktop shelf: scales the tile with the available content
+ * column so roughly 6–7 cards fit between the 40px gutters (1280 → 168px).
+ * Mobile always keeps its fixed size — this is only called behind `isDesktop`.
+ */
+export function desktopCardWidth(contentWidth: number): number {
+  const usable = Math.max(contentWidth - DESKTOP_GUTTERS * 2, CARD_W_DESKTOP_MIN * 2);
+  const scaled = usable / DESKTOP_PER_ROW - DESKTOP_TILE_GAP;
+  return Math.round(Math.min(Math.max(scaled, CARD_W_DESKTOP_MIN), CARD_W_DESKTOP));
+}
+
 // Poster tile used by every shelf. Focus-ready: focusable, labelled, and it
 // shows a gold ring while focused (TV D-pad / keyboard on web).
-export default function MovieCard({ movie, width = 124, progress, onPress, hasTVPreferredFocus }: Props) {
+export default function MovieCard({ movie, width, progress, onPress, hasTVPreferredFocus }: Props) {
   const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const { theme } = useTheme();
-  const height = Math.round(width * 1.5);
+  const isDesktop = useIsDesktop();
+  const contentWidth = useContentWidth();
+  // Explicit width wins (grid screens compute their own columns); otherwise the
+  // desktop tile derives from the content column and mobile stays 124px.
+  const cardWidth = width ?? (isDesktop ? desktopCardWidth(contentWidth) : CARD_W_MOBILE);
+  const height = Math.round(cardWidth * 1.5);
   const percent = typeof progress === "number" ? Math.min(100, Math.round(progress * 100)) : 0;
   const isNew = SESSION_START_MS - Date.parse(movie.created_at) < NEW_WINDOW_MS;
 
@@ -35,15 +62,25 @@ export default function MovieCard({ movie, width = 124, progress, onPress, hasTV
       hasTVPreferredFocus={hasTVPreferredFocus}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
+      onHoverIn={() => {
+        if (isDesktop) setHovered(true);
+      }}
+      onHoverOut={() => setHovered(false)}
       onPress={() => onPress(movie)}
       style={({ pressed }) => [
         styles.wrap,
-        { width },
+        { width: cardWidth },
         focused && styles.focused,
         pressed && styles.pressed,
       ]}
     >
-      <View style={[styles.poster, { height, backgroundColor: "#151515" }]}>
+      <View
+        style={[
+          styles.poster,
+          { height, backgroundColor: "#151515" },
+          isDesktop && hovered && styles.posterHovered,
+        ]}
+      >
         {movie.poster_url ? (
           <Image
             source={{ uri: movie.poster_url }}
@@ -97,6 +134,8 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   pressed: { opacity: 0.9, transform: [{ scale: 0.96 }] },
+  // Desktop-only pointer feedback — applied together with `isDesktop`.
+  posterHovered: { transform: [{ scale: 1.03 }], borderColor: "rgba(232,184,74,0.6)" },
 
   poster: {
     borderRadius: 14,

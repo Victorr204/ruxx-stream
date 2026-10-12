@@ -41,6 +41,8 @@ export default function MyList() {
   const [creating, setCreating] = useState(false);
   const [armedId, setArmedId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
+  const [hoveredId, setHoveredId] = useState(null);
+  const [createHover, setCreateHover] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "error" });
   const nameInputRef = useRef(null);
 
@@ -184,23 +186,34 @@ export default function MyList() {
           onChangeText={setNewName}
           placeholder="New list name (e.g. Watch later)"
           placeholderTextColor={theme.placeholder}
-          style={[styles.input, { color: theme.text, backgroundColor: theme.card, borderColor: theme.cardBorder }]}
+          style={[
+            styles.input,
+            { color: theme.text, backgroundColor: theme.card, borderColor: theme.cardBorder },
+            isDesktop && styles.inputWide,
+          ]}
           maxLength={60}
           editable={!creating}
           returnKeyType="done"
           onSubmitEditing={createList}
         />
         <TouchableOpacity
-          style={[styles.createBtn, atCap && styles.createBtnDisabled]}
+          style={[
+            styles.createBtn,
+            atCap && styles.createBtnDisabled,
+            isDesktop && styles.createBtnWide,
+            isDesktop && createHover && !atCap && styles.createBtnHover,
+          ]}
           onPress={createList}
           disabled={creating || !newName.trim()}
+          onMouseEnter={isDesktop ? () => setCreateHover(true) : undefined}
+          onMouseLeave={isDesktop ? () => setCreateHover(false) : undefined}
           activeOpacity={0.85}
         >
           <LinearGradient
             colors={GOLD_GRADIENT}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
-            style={styles.createGrad}
+            style={[styles.createGrad, isDesktop && styles.createGradWide]}
           >
             {creating ? (
               <ActivityIndicator size="small" color="#111" />
@@ -212,7 +225,11 @@ export default function MyList() {
       </View>
 
       {atCap && !isPremium ? (
-        <TouchableOpacity style={styles.upsell} onPress={() => router.push("/profile")} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={[styles.upsell, isDesktop && styles.upsellWide]}
+          onPress={() => router.push("/profile")}
+          activeOpacity={0.8}
+        >
           <Ionicons name="sparkles" size={13} color={GOLD} />
           <Text style={styles.upsellText}>Free plan allows 5 lists — Premium unlocks 15</Text>
         </TouchableOpacity>
@@ -255,19 +272,23 @@ export default function MyList() {
                   style={[
                     styles.listCard,
                     { backgroundColor: theme.card, borderColor: armed ? "#FF6B6B" : theme.cardBorder },
+                    isDesktop && styles.listCardWide,
+                    isDesktop && !armed && hoveredId === list.id && styles.listCardHover,
                   ]}
                   onPress={() => openList(list)}
                   onLongPress={() => setArmedId(armed ? null : list.id)}
+                  onMouseEnter={isDesktop ? () => setHoveredId(list.id) : undefined}
+                  onMouseLeave={isDesktop ? () => setHoveredId(null) : undefined}
                   activeOpacity={0.85}
                 >
                   <View style={styles.listIcon}>
                     <Ionicons name="albums-outline" size={19} color={GOLD} />
                   </View>
                   <View style={styles.listText}>
-                    <Text style={[styles.listName, { color: theme.text }]} numberOfLines={1}>
+                    <Text style={[styles.listName, { color: theme.text }, isDesktop && styles.listNameWide]} numberOfLines={1}>
                       {list.name}
                     </Text>
-                    <Text style={[styles.listMeta, { color: theme.placeholder }]}>
+                    <Text style={[styles.listMeta, { color: theme.placeholder }, isDesktop && styles.listMetaWide]}>
                       {list.movie_count === 1 ? "1 title" : `${list.movie_count} titles`}
                     </Text>
                   </View>
@@ -300,7 +321,7 @@ export default function MyList() {
               </Animated.View>
             );
           })}
-          <Text style={[styles.hint, { color: theme.placeholder }]}>
+          <Text style={[styles.hint, { color: theme.placeholder }, isDesktop && styles.hintWide]}>
             Long-press a list to delete it. Tap a list to see its titles.
           </Text>
         </ScrollView>
@@ -321,7 +342,14 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 12,
   },
-  headerWide: { paddingHorizontal: 32 },
+  headerWide: {
+    paddingHorizontal: 40,
+    paddingTop: 22,
+    paddingBottom: 16,
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    width: "100%",
+  },
   headerLeft: { flexDirection: "row", alignItems: "center", gap: 9 },
   tick: { width: 3, height: 15, borderRadius: 2, backgroundColor: GOLD },
   title: { fontSize: 24, fontWeight: "900", letterSpacing: -0.4 },
@@ -329,7 +357,13 @@ const styles = StyleSheet.create({
   limit: { fontSize: 11, fontWeight: "800", letterSpacing: 0.8, textTransform: "uppercase" },
 
   createRow: { flexDirection: "row", gap: 10, paddingHorizontal: 20, marginBottom: 12 },
-  createRowWide: { paddingHorizontal: 32 },
+  createRowWide: {
+    paddingHorizontal: 40,
+    marginBottom: 20,
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    width: "100%",
+  },
   input: {
     flex: 1,
     borderWidth: 1,
@@ -339,9 +373,13 @@ const styles = StyleSheet.create({
     fontSize: 14.5,
     fontWeight: "600",
   },
+  inputWide: { height: 50, paddingVertical: 0, paddingHorizontal: 16, fontSize: 15, borderRadius: 16 },
   createBtn: { borderRadius: 14, overflow: "hidden" },
+  createBtnWide: { borderRadius: 16 },
   createBtnDisabled: { opacity: 0.45 },
+  createBtnHover: { opacity: 0.88 },
   createGrad: { height: 44, paddingHorizontal: 18, alignItems: "center", justifyContent: "center" },
+  createGradWide: { height: 50, paddingHorizontal: 24 },
   createBtnText: { color: "#111", fontSize: 14, fontWeight: "800", letterSpacing: 0.3 },
 
   upsell: {
@@ -356,6 +394,16 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 9,
+  },
+  upsellWide: {
+    marginHorizontal: 0,
+    maxWidth: CONTENT_MAX_WIDTH - 80,
+    alignSelf: "center",
+    width: "100%",
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 16,
   },
   upsellText: { color: GOLD, fontSize: 12.5, fontWeight: "800" },
 
@@ -375,7 +423,13 @@ const styles = StyleSheet.create({
   retryText: { color: "#111", fontSize: 14, fontWeight: "800" },
 
   scroll: { paddingHorizontal: 20, paddingBottom: 30, gap: 10 },
-  scrollWide: { paddingHorizontal: 32, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
+  scrollWide: {
+    paddingHorizontal: 40,
+    paddingBottom: 40,
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    width: "100%",
+  },
   listCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -385,6 +439,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 13,
   },
+  listCardWide: { borderRadius: 18, paddingHorizontal: 18, paddingVertical: 16, gap: 16 },
+  listCardHover: { borderColor: "rgba(232,184,74,0.5)" },
   listIcon: {
     width: 40,
     height: 40,
@@ -397,7 +453,9 @@ const styles = StyleSheet.create({
   },
   listText: { flex: 1, gap: 3 },
   listName: { fontSize: 15.5, fontWeight: "800" },
+  listNameWide: { fontSize: 16.5 },
   listMeta: { fontSize: 11.5, fontWeight: "600" },
+  listMetaWide: { fontSize: 12.5 },
 
   armedRow: { flexDirection: "row", gap: 8 },
   armedBtn: { borderRadius: 10, paddingHorizontal: 13, paddingVertical: 8, alignItems: "center", justifyContent: "center" },
@@ -407,4 +465,5 @@ const styles = StyleSheet.create({
   cancelText: { fontSize: 12.5, fontWeight: "700" },
 
   hint: { fontSize: 11.5, textAlign: "center", marginTop: 8, lineHeight: 17 },
+  hintWide: { fontSize: 12.5, marginTop: 18 },
 });

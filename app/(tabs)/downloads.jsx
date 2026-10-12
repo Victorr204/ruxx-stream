@@ -23,6 +23,7 @@ export default function Downloads() {
 
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
   const [pendingRemove, setPendingRemove] = useState(null);
+  const [playHover, setPlayHover] = useState(false);
 
   useEffect(() => {
     // Root layout normally warms this; call again for idempotency.
@@ -114,7 +115,7 @@ export default function Downloads() {
     if (entry.state === "downloading" || entry.state === "encrypting") {
       return (
         <TouchableOpacity
-          style={styles.iconBtn}
+          style={[styles.iconBtn, isDesktop && styles.iconBtnWide]}
           onPress={() => cancelDownload(entry.movieId)}
           accessibilityRole="button"
           accessibilityLabel={`Cancel download of ${entry.movie.title}`}
@@ -127,7 +128,7 @@ export default function Downloads() {
     if (entry.state === "failed") {
       return (
         <TouchableOpacity
-          style={styles.iconBtn}
+          style={[styles.iconBtn, isDesktop && styles.iconBtnWide]}
           onPress={() => handleRetry(entry)}
           accessibilityRole="button"
           accessibilityLabel={`Retry download of ${entry.movie.title}`}
@@ -141,17 +142,23 @@ export default function Downloads() {
     return (
       <View style={styles.actionsRow}>
         <TouchableOpacity
-          style={styles.playBtn}
+          style={[
+            styles.playBtn,
+            isDesktop && styles.playBtnWide,
+            isDesktop && playHover && styles.playBtnHover,
+          ]}
           onPress={() => handlePlay(entry)}
+          onMouseEnter={isDesktop ? () => setPlayHover(true) : undefined}
+          onMouseLeave={isDesktop ? () => setPlayHover(false) : undefined}
           activeOpacity={0.85}
           accessibilityRole="button"
           accessibilityLabel={`Watch ${entry.movie.title} offline`}
         >
           <Ionicons name="play" size={15} color="#111" />
-          <Text style={styles.playBtnText}>Play</Text>
+          <Text style={[styles.playBtnText, isDesktop && styles.playBtnTextWide]}>Play</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={styles.iconBtn}
+          style={[styles.iconBtn, isDesktop && styles.iconBtnWide]}
           onPress={() => handleRemove(entry)}
           accessibilityRole="button"
           accessibilityLabel={isPending ? `Confirm remove of ${entry.movie.title}` : `Remove download of ${entry.movie.title}`}
@@ -160,7 +167,7 @@ export default function Downloads() {
         </TouchableOpacity>
         {isPending ? (
           <TouchableOpacity
-            style={styles.iconBtn}
+            style={[styles.iconBtn, isDesktop && styles.iconBtnWide]}
             onPress={() => setPendingRemove(null)}
             accessibilityRole="button"
             accessibilityLabel="Keep download"
@@ -190,19 +197,19 @@ export default function Downloads() {
 
         {list.length > 0 ? (
           <>
-            <Text style={[styles.summary, { color: theme.subtitle }]}>
+            <Text style={[styles.summary, { color: theme.subtitle }, isDesktop && styles.summaryWide]}>
               {list.length} {list.length === 1 ? "title" : "titles"} · {formatBytes(totalBytes)} on this device
             </Text>
 
-            <View style={styles.list}>
+            <View style={[styles.list, isDesktop && styles.listWide]}>
               {list.map((entry, index) => (
                 <Animated.View
                   key={entry.movieId}
                   entering={FadeInDown.delay(Math.min(index, 6) * 60).duration(400)}
-                  style={[styles.card, { backgroundColor: theme.card }]}
+                  style={[styles.card, { backgroundColor: theme.card }, isDesktop && styles.cardWide]}
                 >
-                  <View style={styles.cardRow}>
-                    <View style={[styles.poster, { backgroundColor: "#151515" }]}>
+                  <View style={[styles.cardRow, isDesktop && styles.cardRowWide]}>
+                    <View style={[styles.poster, { backgroundColor: "#151515" }, isDesktop && styles.posterWide]}>
                       {entry.movie.poster_url ? (
                         <Image source={{ uri: entry.movie.poster_url }} style={styles.posterImg} resizeMode="cover" />
                       ) : (
@@ -211,7 +218,7 @@ export default function Downloads() {
                     </View>
 
                     <View style={styles.meta}>
-                      <Text style={[styles.title, { color: theme.text }]} numberOfLines={1}>
+                      <Text style={[styles.title, { color: theme.text }, isDesktop && styles.titleWide]} numberOfLines={1}>
                         {entry.movie.title}
                       </Text>
                       <Text style={[styles.subtitleRow, { color: theme.placeholder }]} numberOfLines={1}>
@@ -238,7 +245,11 @@ export default function Downloads() {
                 : "Open any movie and tap Download to save it for offline viewing."}
             </Text>
             {!isWeb && !list.length ? (
-              <TouchableOpacity style={styles.browseBtn} onPress={() => router.push("/home")} activeOpacity={0.85}>
+              <TouchableOpacity
+                style={[styles.browseBtn, isDesktop && styles.browseBtnWide]}
+                onPress={() => router.push("/home")}
+                activeOpacity={0.85}
+              >
                 <Ionicons name="compass-outline" size={16} color="#111" />
                 <Text style={styles.browseBtnText}>Browse movies</Text>
               </TouchableOpacity>
@@ -253,14 +264,25 @@ export default function Downloads() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   scroll: { padding: 20, paddingBottom: 40, gap: 12 },
-  scrollWide: { padding: 32, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
+  scrollWide: {
+    paddingHorizontal: 40,
+    paddingTop: 24,
+    paddingBottom: 48,
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    width: "100%",
+  },
   header: { fontSize: 28, fontWeight: "900", letterSpacing: -0.5 },
-  headerWide: { fontSize: 32 },
+  headerWide: { fontSize: 30, marginBottom: 2 },
   summary: { fontSize: 13, marginTop: -4 },
+  summaryWide: { fontSize: 14, marginTop: 0, marginBottom: 4 },
 
   list: { gap: 12 },
+  listWide: { gap: 14 },
   card: { borderRadius: 22, padding: 14 },
+  cardWide: { borderRadius: 24, padding: 20 },
   cardRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  cardRowWide: { gap: 18 },
 
   poster: {
     width: 58,
@@ -270,10 +292,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     overflow: "hidden",
   },
+  posterWide: { width: 66, height: 96, borderRadius: 14 },
   posterImg: { width: "100%", height: "100%" },
 
   meta: { flex: 1, gap: 4 },
   title: { fontSize: 15, fontWeight: "800" },
+  titleWide: { fontSize: 16.5 },
   subtitleRow: { fontSize: 12 },
   statusText: { fontSize: 12 },
 
@@ -295,6 +319,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.06)",
   },
+  iconBtnWide: { width: 40, height: 40, borderRadius: 20 },
   playBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -305,7 +330,10 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     justifyContent: "center",
   },
+  playBtnWide: { height: 46, borderRadius: 23, paddingHorizontal: 20, gap: 8 },
+  playBtnHover: { opacity: 0.88 },
   playBtnText: { fontSize: 13, fontWeight: "800", color: "#111" },
+  playBtnTextWide: { fontSize: 14 },
 
   center: { alignItems: "center", justifyContent: "center", gap: 8, paddingTop: 90, paddingHorizontal: 24 },
   emptyTitle: { fontSize: 20, fontWeight: "800", marginTop: 8 },
@@ -322,4 +350,5 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   browseBtnText: { fontSize: 14, fontWeight: "800", color: "#111" },
+  browseBtnWide: { height: 48, borderRadius: 24, paddingHorizontal: 24 },
 });

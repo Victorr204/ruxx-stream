@@ -50,6 +50,9 @@ export default function MovieDetail() {
 
   const [resumeState, setResumeState] = useState({ id: null, position: 0 });
   const [playFocused, setPlayFocused] = useState(false);
+  // Desktop-only hover affordances (web); native never fires these.
+  const [playHovered, setPlayHovered] = useState(false);
+  const [posterHovered, setPosterHovered] = useState(false);
   const [alert, setAlert] = useState({ visible: false, title: "", message: "", type: "info" });
   const [listSheetOpen, setListSheetOpen] = useState(false);
   const [trailerOpen, setTrailerOpen] = useState(false);
@@ -230,6 +233,137 @@ export default function MovieDetail() {
     });
   };
 
+  // Shared blocks — composed identically on mobile and into the desktop
+  // two-column hero below, so props/handlers stay defined in exactly one place.
+  const genreChips =
+    (movie.genres?.length ?? 0) > 0 ? (
+      <View style={styles.genreRow}>
+        {movie.genres.map((genre) => (
+          <View key={genre.id} style={[styles.genreChip, { borderColor: "rgba(232,184,74,0.4)" }]}>
+            <Text style={[styles.genreText, { color: GOLD }]}>{genre.name}</Text>
+          </View>
+        ))}
+      </View>
+    ) : null;
+
+  const playButton = (
+    <TouchableOpacity
+      focusable
+      accessible
+      accessibilityRole="button"
+      accessibilityLabel={canResume ? `Resume ${movie.title}` : `Play ${movie.title}`}
+      hasTVPreferredFocus
+      onPress={handlePlay}
+      onFocus={() => setPlayFocused(true)}
+      onBlur={() => setPlayFocused(false)}
+      onMouseEnter={() => setPlayHovered(true)}
+      onMouseLeave={() => setPlayHovered(false)}
+      style={[
+        styles.playBtn,
+        isDesktop && styles.actionWide,
+        playFocused && styles.playFocused,
+        isDesktop && playHovered && styles.playHovered,
+      ]}
+      activeOpacity={0.88}
+    >
+      <LinearGradient colors={GOLD_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.playGrad}>
+        <Ionicons name={canResume ? "play-skip-forward" : "play"} size={18} color="#111" />
+        <Text style={styles.playText}>
+          {desktopLocked
+            ? "Watch with Premium"
+            : canResume
+              ? `Resume ${formatRuntime(position)}`
+              : "Play"}
+        </Text>
+      </LinearGradient>
+    </TouchableOpacity>
+  );
+
+  const trailerButton = movie.trailer_url ? (
+    <TouchableOpacity
+      focusable
+      accessible
+      accessibilityRole="button"
+      accessibilityLabel={`Watch trailer — ${movie.title}`}
+      onPress={() => setTrailerOpen(true)}
+      style={[styles.dlBtn, isDesktop && styles.actionWide]}
+      activeOpacity={0.8}
+    >
+      <Ionicons name="film-outline" size={18} color={GOLD} />
+      <Text style={[styles.dlBtnText, { color: theme.text }]}>Trailer</Text>
+    </TouchableOpacity>
+  ) : null;
+
+  const downloadButton = showDownload ? (
+    <TouchableOpacity
+      focusable
+      accessible
+      accessibilityRole="button"
+      accessibilityLabel={`${dlLabel} — ${movie.title}`}
+      onPress={handleDownload}
+      style={[styles.dlBtn, isDesktop && styles.actionWide, dlState === "ready" && styles.dlBtnReady]}
+      activeOpacity={0.8}
+    >
+      <Ionicons name={dlIcon} size={18} color={GOLD} />
+      <Text style={[styles.dlBtnText, { color: theme.text }]}>{dlLabel}</Text>
+    </TouchableOpacity>
+  ) : null;
+
+  const listButton = (
+    <TouchableOpacity
+      focusable
+      accessible
+      accessibilityRole="button"
+      accessibilityLabel={`My List — ${movie.title}`}
+      onPress={() => setListSheetOpen(true)}
+      style={[styles.dlBtn, isDesktop && styles.actionWide, inListIds.length > 0 && styles.dlBtnReady]}
+      activeOpacity={0.8}
+    >
+      <Ionicons
+        name={inListIds.length > 0 ? "bookmark" : "bookmark-outline"}
+        size={18}
+        color={GOLD}
+      />
+      <Text style={[styles.dlBtnText, { color: theme.text }]}>
+        {inListIds.length > 0 ? "In My List" : "My List"}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  const shareButton = (
+    <TouchableOpacity
+      focusable
+      accessible
+      accessibilityRole="button"
+      accessibilityLabel={`Share — ${movie.title}`}
+      onPress={handleShare}
+      style={[styles.dlBtn, isDesktop && styles.actionWide]}
+      activeOpacity={0.8}
+    >
+      <Ionicons name="share-social-outline" size={18} color={GOLD} />
+      <Text style={[styles.dlBtnText, { color: theme.text }]}>Share</Text>
+    </TouchableOpacity>
+  );
+
+  const descriptionBlock = movie.description ? (
+    <>
+      <Text style={[styles.sectionLabel, { color: theme.placeholder }]}>About</Text>
+      <Text style={[styles.description, { color: theme.subtitle }, isDesktop && styles.descriptionWide]}>
+        {movie.description}
+      </Text>
+    </>
+  ) : null;
+
+  const copyrightLine = (
+    <Text style={[styles.copyright, { color: theme.placeholder }, isDesktop && styles.copyrightWide]}>
+      {movie.release_year ? `© ${movie.release_year} • ` : ""}Licensed for streaming on ruxx stream
+    </Text>
+  );
+
+  // On desktop the floating back chip lines up with the centered 1280 column
+  // instead of hugging the raw window edge.
+  const backChipMargin = isDesktop ? Math.max((windowW - CONTENT_MAX_WIDTH) / 2, 0) + 40 : 16;
+
   return (
     <View style={[styles.root, { backgroundColor: theme.background }]}>
       <AppAlert
@@ -280,139 +414,81 @@ export default function MovieDetail() {
         </View>
 
         {/* ── Title block ── */}
-        <View style={[styles.titleBlock, isDesktop && styles.titleBlockWide]}>
-          <View style={styles.titleRow}>
-            <View style={styles.posterWrap}>
-              {movie.poster_url ? (
-                <Image source={{ uri: movie.poster_url }} style={[styles.poster, isDesktop && styles.posterWide]} contentFit="cover" cachePolicy="memory-disk" transition={200} />
-              ) : (
-                <View style={[styles.poster, isDesktop && styles.posterWide, styles.posterFallback]}>
-                  <Ionicons name="film-outline" size={28} color="rgba(232,184,74,0.6)" />
+        {isDesktop ? (
+          /* Desktop: two-column hero inside the centered 1280px container —
+             left column = poster/meta/genres/actions, right column = title/synopsis. */
+          <View style={styles.titleBlockWide}>
+            <View style={styles.heroRowWide}>
+              <View style={styles.heroLeftWide}>
+                <View
+                  style={[styles.posterWrap, styles.posterWrapWide, posterHovered && styles.posterWrapHoveredWide]}
+                  onMouseEnter={() => setPosterHovered(true)}
+                  onMouseLeave={() => setPosterHovered(false)}
+                >
+                  {movie.poster_url ? (
+                    <Image source={{ uri: movie.poster_url }} style={styles.posterWide} contentFit="cover" cachePolicy="memory-disk" transition={200} />
+                  ) : (
+                    <View style={[styles.posterWide, styles.posterFallback]}>
+                      <Ionicons name="film-outline" size={40} color="rgba(232,184,74,0.6)" />
+                    </View>
+                  )}
                 </View>
-              )}
-            </View>
-            <View style={styles.titleText}>
-              <Text style={[styles.title, { color: theme.text }, isDesktop && styles.titleWide]} numberOfLines={3}>
-                {movie.title}
-              </Text>
-              {meta ? <Text style={[styles.meta, { color: theme.subtitle }]}>{meta}</Text> : null}
+                {meta ? <Text style={[styles.metaWide, { color: theme.subtitle }]}>{meta}</Text> : null}
+                {genreChips}
+                <View style={styles.actionsWide}>
+                  {playButton}
+                  {trailerButton}
+                  {downloadButton}
+                  {listButton}
+                  {shareButton}
+                </View>
+              </View>
+
+              <View style={styles.heroRightWide}>
+                <Text style={[styles.titleWide, { color: theme.text }]} numberOfLines={3}>
+                  {movie.title}
+                </Text>
+                {descriptionBlock}
+                {copyrightLine}
+              </View>
             </View>
           </View>
-
-          {(movie.genres?.length ?? 0) > 0 && (
-            <View style={styles.genreRow}>
-              {movie.genres.map((genre) => (
-                <View key={genre.id} style={[styles.genreChip, { borderColor: "rgba(232,184,74,0.4)" }]}>
-                  <Text style={[styles.genreText, { color: GOLD }]}>{genre.name}</Text>
-                </View>
-              ))}
+        ) : (
+          <View style={styles.titleBlock}>
+            <View style={styles.titleRow}>
+              <View style={styles.posterWrap}>
+                {movie.poster_url ? (
+                  <Image source={{ uri: movie.poster_url }} style={styles.poster} contentFit="cover" cachePolicy="memory-disk" transition={200} />
+                ) : (
+                  <View style={[styles.poster, styles.posterFallback]}>
+                    <Ionicons name="film-outline" size={28} color="rgba(232,184,74,0.6)" />
+                  </View>
+                )}
+              </View>
+              <View style={styles.titleText}>
+                <Text style={[styles.title, { color: theme.text }]} numberOfLines={3}>
+                  {movie.title}
+                </Text>
+                {meta ? <Text style={[styles.meta, { color: theme.subtitle }]}>{meta}</Text> : null}
+              </View>
             </View>
-          )}
 
-          {/* ── Play / Resume ── */}
-          <TouchableOpacity
-            focusable
-            accessible
-            accessibilityRole="button"
-            accessibilityLabel={canResume ? `Resume ${movie.title}` : `Play ${movie.title}`}
-            hasTVPreferredFocus
-            onPress={handlePlay}
-            onFocus={() => setPlayFocused(true)}
-            onBlur={() => setPlayFocused(false)}
-            style={[styles.playBtn, isDesktop && styles.actionWide, playFocused && styles.playFocused]}
-            activeOpacity={0.88}
-          >
-            <LinearGradient colors={GOLD_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.playGrad}>
-              <Ionicons name={canResume ? "play-skip-forward" : "play"} size={18} color="#111" />
-              <Text style={styles.playText}>
-                {desktopLocked
-                  ? "Watch with Premium"
-                  : canResume
-                    ? `Resume ${formatRuntime(position)}`
-                    : "Play"}
-              </Text>
-            </LinearGradient>
-          </TouchableOpacity>
+            {genreChips}
 
-          {movie.trailer_url ? (
-            <TouchableOpacity
-              focusable
-              accessible
-              accessibilityRole="button"
-              accessibilityLabel={`Watch trailer — ${movie.title}`}
-              onPress={() => setTrailerOpen(true)}
-              style={[styles.dlBtn, isDesktop && styles.actionWide]}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="film-outline" size={18} color={GOLD} />
-              <Text style={[styles.dlBtnText, { color: theme.text }]}>Trailer</Text>
-            </TouchableOpacity>
-          ) : null}
+            {playButton}
+            {trailerButton}
+            {downloadButton}
+            {listButton}
+            {shareButton}
 
-          {/* ── Download for offline (native only) ── */}
-          {showDownload ? (
-            <TouchableOpacity
-              focusable
-              accessible
-              accessibilityRole="button"
-              accessibilityLabel={`${dlLabel} — ${movie.title}`}
-              onPress={handleDownload}
-              style={[styles.dlBtn, isDesktop && styles.actionWide, dlState === "ready" && styles.dlBtnReady]}
-              activeOpacity={0.8}
-            >
-              <Ionicons name={dlIcon} size={18} color={GOLD} />
-              <Text style={[styles.dlBtnText, { color: theme.text }]}>{dlLabel}</Text>
-            </TouchableOpacity>
-          ) : null}
-
-          <TouchableOpacity
-            focusable
-            accessible
-            accessibilityRole="button"
-            accessibilityLabel={`My List — ${movie.title}`}
-            onPress={() => setListSheetOpen(true)}
-            style={[styles.dlBtn, isDesktop && styles.actionWide, inListIds.length > 0 && styles.dlBtnReady]}
-            activeOpacity={0.8}
-          >
-            <Ionicons
-              name={inListIds.length > 0 ? "bookmark" : "bookmark-outline"}
-              size={18}
-              color={GOLD}
-            />
-            <Text style={[styles.dlBtnText, { color: theme.text }]}>
-              {inListIds.length > 0 ? "In My List" : "My List"}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            focusable
-            accessible
-            accessibilityRole="button"
-            accessibilityLabel={`Share — ${movie.title}`}
-            onPress={handleShare}
-            style={[styles.dlBtn, isDesktop && styles.actionWide]}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="share-social-outline" size={18} color={GOLD} />
-            <Text style={[styles.dlBtnText, { color: theme.text }]}>Share</Text>
-          </TouchableOpacity>
-
-          {/* ── Description ── */}
-          {movie.description ? (
-            <>
-              <Text style={[styles.sectionLabel, { color: theme.placeholder }]}>About</Text>
-              <Text style={[styles.description, { color: theme.subtitle }]}>{movie.description}</Text>
-            </>
-          ) : null}
-
-          <Text style={[styles.copyright, { color: theme.placeholder }]}>
-            {movie.release_year ? `© ${movie.release_year} • ` : ""}Licensed for streaming on ruxx stream
-          </Text>
-        </View>
+            {descriptionBlock}
+            {copyrightLine}
+          </View>
+        )}
 
         {/* ── For You ── */}
         {forYou.items.length > 0 && (
-          <View style={styles.forYouBlock}>
+          <View style={[styles.forYouBlock, isDesktop && styles.forYouBlockWide]}>
             <MovieRow
               key={forYou.batchKey}
               title="For You"
@@ -428,7 +504,7 @@ export default function MovieDetail() {
                 accessibilityLabel="Suggest more titles"
                 activeOpacity={0.85}
                 onPress={forYou.suggestMore}
-                style={styles.suggestBtn}
+                style={[styles.suggestBtn, isDesktop && styles.suggestBtnWide]}
               >
                 <Ionicons name="refresh" size={16} color={GOLD} />
                 <Text style={styles.suggestText}>Suggest more</Text>
@@ -441,7 +517,7 @@ export default function MovieDetail() {
       {/* ── Floating back ── */}
       <SafeAreaView style={styles.backFloatingWrap} pointerEvents="box-none" edges={["top"]}>
         <TouchableOpacity
-          style={styles.backFloating}
+          style={[styles.backFloating, isDesktop && { marginLeft: backChipMargin }]}
           onPress={goBack}
           accessibilityRole="button"
           accessibilityLabel="Go back"
@@ -473,7 +549,20 @@ const styles = StyleSheet.create({
   backdropFallback: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "#141414" },
 
   titleBlock: { paddingHorizontal: 20, marginTop: -64, gap: 14 },
-  titleBlockWide: { paddingHorizontal: 48, maxWidth: 780 },
+
+  /* ── Desktop hero ── */
+  titleBlockWide: { paddingHorizontal: 40, marginTop: -96, paddingBottom: 8 },
+  heroRowWide: { flexDirection: "row", gap: 48, alignItems: "flex-start" },
+  // Left column: fixed poster column (~320px) with meta, genres and actions.
+  heroLeftWide: { width: 320, gap: 16 },
+  // Right column: title + synopsis, capped so the copy keeps a readable measure.
+  heroRightWide: { flex: 1, minWidth: 0 },
+  posterWrapWide: { borderRadius: 16, alignSelf: "center" },
+  posterWrapHoveredWide: {
+    transform: [{ translateY: -4 }],
+    borderColor: "rgba(232,184,74,0.55)",
+  },
+  actionsWide: { gap: 12, marginTop: 8 },
 
   titleRow: { flexDirection: "row", gap: 14, alignItems: "flex-end" },
   posterWrap: {
@@ -488,24 +577,34 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   poster: { width: 104, height: 156 },
-  posterWide: { width: 148, height: 222 },
+  posterWide: { width: 300, height: 450 },
   posterFallback: { alignItems: "center", justifyContent: "center", backgroundColor: "#151515" },
   titleText: { flex: 1, gap: 5, paddingBottom: 4 },
   title: { fontSize: 24, fontWeight: "900", letterSpacing: -0.4, lineHeight: 29 },
-  titleWide: { fontSize: 34, lineHeight: 40 },
+  titleWide: { fontSize: 38, lineHeight: 45, letterSpacing: -0.9, marginBottom: 14 },
   meta: { fontSize: 13, fontWeight: "700" },
+  metaWide: { fontSize: 14, fontWeight: "700", textAlign: "center" },
 
   genreRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   genreChip: { borderWidth: 1, borderRadius: 20, paddingHorizontal: 11, paddingVertical: 5 },
   genreText: { fontSize: 11.5, fontWeight: "700" },
 
   playBtn: { borderRadius: 14, overflow: "hidden", marginTop: 2 },
-  actionWide: { maxWidth: 380, alignSelf: "flex-start" },
+  // Desktop: actions stack down the 320px left column at full column width.
+  actionWide: { alignSelf: "stretch", maxWidth: 340 },
   playFocused: {
     shadowColor: GOLD,
     shadowOpacity: 0.55,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 5 },
+    elevation: 9,
+  },
+  playHovered: {
+    transform: [{ translateY: -1 }],
+    shadowColor: GOLD,
+    shadowOpacity: 0.5,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
     elevation: 9,
   },
   playGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, height: 54 },
@@ -532,10 +631,15 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   description: { fontSize: 14.5, lineHeight: 21.5 },
+  // Desktop: 15.5px copy capped at a ~70ch measure so lines don't stretch
+  // across the whole right column.
+  descriptionWide: { fontSize: 15.5, lineHeight: 24.5, maxWidth: 680 },
 
   copyright: { fontSize: 11, marginTop: 8 },
+  copyrightWide: { fontSize: 11.5, marginTop: 28 },
 
   forYouBlock: { marginTop: 6 },
+  forYouBlockWide: { marginTop: 40 },
   suggestBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -548,6 +652,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(232,184,74,0.45)",
     backgroundColor: "rgba(232,184,74,0.06)",
   },
+  suggestBtnWide: { marginHorizontal: 40, alignSelf: "center", maxWidth: 340 },
   suggestText: { color: GOLD, fontSize: 14, fontWeight: "800", letterSpacing: 0.3 },
 
   backFloatingWrap: { position: "absolute", top: 0, left: 0 },

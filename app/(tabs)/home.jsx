@@ -111,28 +111,34 @@ export default function Home() {
         <LinearGradient colors={["rgba(232,184,74,0.09)", "rgba(232,184,74,0)"]} style={StyleSheet.absoluteFill} />
       </View>
 
-      <View style={[styles.topBar, isDesktop && styles.topBarWide]}>
-        <View style={styles.brandGroup}>
-          <View style={styles.logoRingSmall}>
-            <Image source={Logos} style={styles.logoSmall} resizeMode="contain" />
+      {/* Brand + account live in the sidebar/top bar on desktop, so this
+          mobile-only chrome is dropped at the breakpoint. */}
+      {!isDesktop && (
+        <>
+          <View style={styles.topBar}>
+            <View style={styles.brandGroup}>
+              <View style={styles.logoRingSmall}>
+                <Image source={Logos} style={styles.logoSmall} resizeMode="contain" />
+              </View>
+              <Text style={[styles.brand, { color: theme.text }]}>
+                ruxx <Text style={{ color: GOLD }}>stream</Text>
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.avatarBtn, { borderColor: GOLD }]}
+              onPress={() => router.navigate("/profile")}
+              accessibilityRole="button"
+              accessibilityLabel="Open profile"
+            >
+              <Text style={[styles.avatarText, { color: GOLD }]}>{initials}</Text>
+            </TouchableOpacity>
           </View>
-          <Text style={[styles.brand, { color: theme.text }]}>
-            ruxx <Text style={{ color: GOLD }}>stream</Text>
-          </Text>
-        </View>
-        <TouchableOpacity
-          style={[styles.avatarBtn, { borderColor: GOLD }]}
-          onPress={() => router.navigate("/profile")}
-          accessibilityRole="button"
-          accessibilityLabel="Open profile"
-        >
-          <Text style={[styles.avatarText, { color: GOLD }]}>{initials}</Text>
-        </TouchableOpacity>
-      </View>
 
-      <View style={[styles.topRule, isDesktop && styles.topRuleWide]}>
-        <LinearGradient colors={GOLD_HAIRLINE} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
-      </View>
+          <View style={styles.topRule}>
+            <LinearGradient colors={GOLD_HAIRLINE} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+          </View>
+        </>
+      )}
 
       <ScrollView
         showsVerticalScrollIndicator={false}

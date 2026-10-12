@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   View,
   Text,
@@ -19,6 +19,8 @@ import { NEW_LISTING_SEGMENT } from "../../src/lib/api";
 import MovieCard from "../../src/components/MovieCard";
 
 const CARD_GAP = 12;
+/** Desktop gutters keep the grid inside the centered 1280px container. */
+const WIDE_GUTTER = 40;
 
 function columnsFor(width) {
   if (width >= 1000) return 6;
@@ -37,9 +39,13 @@ export default function Category() {
   const { width: windowW } = useWindowDimensions();
   const isDesktop = useIsDesktop();
   const contentW = isDesktop ? Math.min(windowW, CONTENT_MAX_WIDTH) : windowW;
+  const [hoveredId, setHoveredId] = useState(null);
 
-  const columns = columnsFor(windowW);
-  const cardWidth = Math.floor((contentW - 40 - (2 * columns - 1) * CARD_GAP) / columns);
+  // Desktop: pick columns from the capped content width (not the raw window),
+  // and subtract the wider gutters so the grid can't overflow the container.
+  const columns = columnsFor(isDesktop ? contentW : windowW);
+  const gutters = isDesktop ? WIDE_GUTTER * 2 : 40;
+  const cardWidth = Math.floor((contentW - gutters - (2 * columns - 1) * CARD_GAP) / columns);
 
   const goBack = useCallback(() => {
     if (router.canGoBack()) {
@@ -67,14 +73,14 @@ export default function Category() {
             {isNewListing ? "New Movies" : genre?.name ?? "Category"}
           </Text>
           {!loading && !error && (
-            <Text style={[styles.count, { color: theme.placeholder }]}>
+            <Text style={[styles.count, { color: theme.placeholder }, isDesktop && styles.countWide]}>
               {total === 1 ? "1 title" : `${total} titles`}
             </Text>
           )}
         </View>
       </View>
 
-      <View style={styles.rule}>
+      <View style={[styles.rule, isDesktop && styles.ruleWide]}>
         <LinearGradient
           colors={["rgba(232,184,74,0.5)", "rgba(255,255,255,0.10)", "transparent"]}
           start={{ x: 0, y: 0 }}
@@ -127,9 +133,21 @@ export default function Category() {
           numColumns={columns}
           contentContainerStyle={[styles.grid, isDesktop && styles.gridWide]}
           columnWrapperStyle={{ gap: CARD_GAP }}
-          renderItem={({ item }) => (
-            <MovieCard movie={item} width={cardWidth} onPress={openMovie} />
-          )}
+          renderItem={({ item }) =>
+            isDesktop ? (
+              // Desktop: wrap the card so we can add a pointer hover lift
+              // without touching MovieCard (owned elsewhere).
+              <View
+                style={[styles.cardSlot, hoveredId === item.id && styles.cardSlotHover]}
+                onMouseEnter={() => setHoveredId(item.id)}
+                onMouseLeave={() => setHoveredId((h) => (h === item.id ? null : h))}
+              >
+                <MovieCard movie={item} width={cardWidth} onPress={openMovie} />
+              </View>
+            ) : (
+              <MovieCard movie={item} width={cardWidth} onPress={openMovie} />
+            )
+          }
           ListFooterComponent={
             <View style={styles.footerBlock}>
               {moreError && (
@@ -179,10 +197,18 @@ const styles = StyleSheet.create({
     paddingTop: 6,
     paddingBottom: 10,
   },
-  headerBarWide: { paddingHorizontal: 32 },
+  // Desktop: header sits on the same centered 1280px column as the grid.
+  headerBarWide: {
+    paddingHorizontal: WIDE_GUTTER,
+    paddingTop: 22,
+    paddingBottom: 14,
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    width: "100%",
+  },
   headerText: { flex: 1 },
   title: { fontSize: 24, fontWeight: "900", letterSpacing: -0.4 },
-  titleWide: { fontSize: 28 },
+  titleWide: { fontSize: 28, letterSpacing: -0.6 },
   count: {
     fontSize: 10.5,
     fontWeight: "800",
@@ -190,7 +216,15 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     marginTop: 2,
   },
+  countWide: { fontSize: 11.5, marginTop: 4 },
   rule: { height: 1, marginHorizontal: 20, marginBottom: 8, borderRadius: 1, overflow: "hidden" },
+  ruleWide: {
+    marginHorizontal: WIDE_GUTTER,
+    marginBottom: 12,
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    width: "100%",
+  },
 
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 30 },
   centerTitle: { fontSize: 17, fontWeight: "800", marginTop: 6 },
@@ -214,7 +248,29 @@ const styles = StyleSheet.create({
   retryText: { color: "#111", fontSize: 14, fontWeight: "800", letterSpacing: 0.3 },
 
   grid: { paddingHorizontal: 20, paddingTop: 6, paddingBottom: 34 },
-  gridWide: { paddingHorizontal: 32, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
+  gridWide: {
+    paddingHorizontal: WIDE_GUTTER,
+    paddingTop: 10,
+    paddingBottom: 48,
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    width: "100%",
+  },
+  // Desktop hover slot around each poster (web pointer only).
+  cardSlot: {
+    borderRadius: 14,
+    transitionProperty: "transform, box-shadow",
+    transitionDuration: "150ms",
+    transitionTimingFunction: "ease-out",
+  },
+  cardSlotHover: {
+    transform: [{ translateY: -4 }],
+    shadowColor: GOLD,
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
+  },
 
   footerBlock: { paddingTop: 22, alignItems: "center" },
   moreBtn: {

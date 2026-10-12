@@ -11,7 +11,7 @@ import {
   ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useTheme, GOLD } from "../../context/ThemeContext";
@@ -22,7 +22,8 @@ import MovieRow from "../../src/components/MovieRow";
 import BannerAdSlot from "../../src/components/BannerAdSlot";
 import { fetchNewestMovies, fetchPopularGenres, fetchTrendingMovies } from "../../src/lib/api";
 
-function columnsFor(width) {
+function columnsFor(width, wide) {
+  if (wide && width >= 1180) return 7;
   if (width >= 1000) return 6;
   if (width >= 760) return 5;
   if (width >= 560) return 4;
@@ -31,8 +32,13 @@ function columnsFor(width) {
 
 export default function Search() {
   const { theme } = useTheme();
-  const [query, setQuery] = useState("");
+  const { q } = useLocalSearchParams();
+  // The desktop top bar submits `/search?q=…`; mirror it into the local field.
+  const qParam = typeof q === "string" ? q : Array.isArray(q) && typeof q[0] === "string" ? q[0] : null;
+  const [query, setQuery] = useState(() => qParam ?? "");
+  const [lastQParam, setLastQParam] = useState(qParam);
   const [touched, setTouched] = useState(false);
+  const [hoverGenre, setHoverGenre] = useState(null);
   const [sugg, setSugg] = useState({ loaded: false, top: [], genres: [], error: null });
   const { data: results, loading, error } = useSearch(query);
   const { width: windowW } = useWindowDimensions();
@@ -68,9 +74,20 @@ export default function Search() {
     };
   }, [touched, sugg.loaded]);
 
-  const columns = columnsFor(isDesktop ? contentW : windowW);
+  // Keep the local field in sync when the global (top bar) search navigates
+  // here with ?q=… (render-time state adjustment, no effect needed).
+  if (qParam !== lastQParam) {
+    setLastQParam(qParam);
+    if (qParam !== null) {
+      setQuery(qParam);
+      setTouched(true);
+    }
+  }
+
+  const columns = columnsFor(isDesktop ? contentW : windowW, isDesktop);
   const gap = 12;
-  const cardWidth = Math.floor((contentW - 40 - (2 * columns - 1) * gap) / columns);
+  const gutters = isDesktop ? 80 : 40;
+  const cardWidth = Math.floor((contentW - gutters - (2 * columns - 1) * gap) / columns);
 
   const hasQuery = query.trim().length > 0;
   const showSuggestions = touched && !hasQuery;
@@ -101,13 +118,13 @@ export default function Search() {
       </View>
 
       {loading && (
-        <View style={styles.center}>
+        <View style={[styles.center, isDesktop && styles.centerWide]}>
           <ActivityIndicator color={GOLD} size="large" />
         </View>
       )}
 
       {!loading && error && (
-        <View style={styles.center}>
+        <View style={[styles.center, isDesktop && styles.centerWide]}>
           <Ionicons name="alert-circle-outline" size={40} color={theme.placeholder} />
           <Text style={[styles.centerTitle, { color: theme.text }]}>Search failed</Text>
           <Text style={[styles.centerText, { color: theme.subtitle }]}>{error}</Text>
@@ -115,7 +132,7 @@ export default function Search() {
       )}
 
       {!loading && !error && !hasQuery && !touched && (
-        <View style={styles.center}>
+        <View style={[styles.center, isDesktop && styles.centerWide]}>
           <Ionicons name="search-outline" size={44} color={theme.placeholder} />
           <Text style={[styles.centerTitle, { color: theme.text }]}>Find something to watch</Text>
           <Text style={[styles.centerText, { color: theme.subtitle }]}>
@@ -156,10 +173,10 @@ export default function Search() {
           )}
 
           {sugg.loaded && !sugg.error && sugg.genres.length > 0 && (
-            <View style={styles.suggSection}>
-              <View style={styles.suggHeader}>
+            <View style={[styles.suggSection, isDesktop && styles.suggSectionWide]}>
+              <View style={[styles.suggHeader, isDesktop && styles.suggHeaderWide]}>
                 <View style={styles.suggTick} />
-                <Text style={[styles.suggTitle, { color: theme.text }]}>Popular Genres</Text>
+                <Text style={[styles.suggTitle, { color: theme.text }, isDesktop && styles.suggTitleWide]}>Popular Genres</Text>
                 <View style={styles.suggRule}>
                   <LinearGradient
                     colors={["rgba(232,184,74,0.4)", "rgba(255,255,255,0.05)", "transparent"]}
@@ -172,14 +189,20 @@ export default function Search() {
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.genreTrack}
+                contentContainerStyle={[styles.genreTrack, isDesktop && styles.genreTrackWide]}
                 decelerationRate="fast"
               >
                 {sugg.genres.map(({ genre, count }) => (
                   <TouchableOpacity
                     key={genre.id}
-                    style={[styles.genreCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}
+                    style={[
+                      styles.genreCard,
+                      { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                      isDesktop && hoverGenre === genre.id && styles.genreCardHover,
+                    ]}
                     onPress={() => router.push(`/category/${genre.id}`)}
+                    onMouseEnter={isDesktop ? () => setHoverGenre(genre.id) : undefined}
+                    onMouseLeave={isDesktop ? () => setHoverGenre(null) : undefined}
                     activeOpacity={0.85}
                   >
                     <View style={styles.genreIcon}>
@@ -208,7 +231,7 @@ export default function Search() {
       )}
 
       {!loading && !error && hasQuery && results.length === 0 && (
-        <View style={styles.center}>
+        <View style={[styles.center, isDesktop && styles.centerWide]}>
           <Ionicons name="file-tray-outline" size={42} color={theme.placeholder} />
           <Text style={[styles.centerTitle, { color: theme.text }]}>No matches</Text>
           <Text style={[styles.centerText, { color: theme.subtitle }]}>
@@ -251,7 +274,16 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 14,
   },
-  headerWide: { fontSize: 30, marginHorizontal: 32 },
+  headerWide: {
+    fontSize: 30,
+    marginHorizontal: 0,
+    marginTop: 14,
+    marginBottom: 20,
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    width: "100%",
+    paddingHorizontal: 40,
+  },
 
   searchBox: {
     flexDirection: "row",
@@ -264,10 +296,18 @@ const styles = StyleSheet.create({
     height: 50,
     marginBottom: 16,
   },
-  searchBoxWide: { marginHorizontal: 0, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
+  searchBoxWide: {
+    marginHorizontal: 0,
+    maxWidth: CONTENT_MAX_WIDTH - 80,
+    alignSelf: "center",
+    width: "100%",
+    height: 52,
+    marginBottom: 24,
+  },
   input: { flex: 1, fontSize: 15, height: 46, padding: 0 },
 
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 30 },
+  centerWide: { maxWidth: 520, alignSelf: "center", width: "100%", paddingHorizontal: 20 },
   centerTitle: { fontSize: 17, fontWeight: "800", marginTop: 6 },
   centerText: { fontSize: 13.5, textAlign: "center", lineHeight: 19 },
 
@@ -283,6 +323,7 @@ const styles = StyleSheet.create({
   suggNote: { fontSize: 12.5, textAlign: "center", lineHeight: 18 },
 
   suggSection: { marginBottom: 8 },
+  suggSectionWide: { marginBottom: 28 },
   suggHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -290,6 +331,7 @@ const styles = StyleSheet.create({
     marginRight: 20,
     marginBottom: 12,
   },
+  suggHeaderWide: { marginLeft: 40, marginRight: 40, marginBottom: 16 },
   suggTick: { width: 3, height: 13, borderRadius: 2, backgroundColor: GOLD, marginRight: 9 },
   suggTitle: {
     fontSize: 12.5,
@@ -297,8 +339,10 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
     textTransform: "uppercase",
   },
+  suggTitleWide: { fontSize: 13.5 },
   suggRule: { flex: 1, height: 1, marginLeft: 12, borderRadius: 1, overflow: "hidden" },
   genreTrack: { paddingHorizontal: 20, gap: 10 },
+  genreTrackWide: { paddingHorizontal: 40 },
   genreCard: {
     width: 134,
     borderWidth: 1,
@@ -307,6 +351,7 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     gap: 7,
   },
+  genreCardHover: { borderColor: "rgba(232,184,74,0.6)", backgroundColor: "rgba(232,184,74,0.12)" },
   genreIcon: {
     width: 32,
     height: 32,
@@ -326,6 +371,13 @@ const styles = StyleSheet.create({
   },
 
   grid: { paddingHorizontal: 20, paddingBottom: 30, gap: 16 },
-  gridWide: { paddingHorizontal: 32, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
-  constrainWide: { maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%" },
+  gridWide: {
+    paddingHorizontal: 40,
+    paddingTop: 8,
+    paddingBottom: 40,
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    width: "100%",
+  },
+  constrainWide: { maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", width: "100%", paddingBottom: 40 },
 });

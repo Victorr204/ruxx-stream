@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   PanResponder,
   Platform,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -80,6 +81,12 @@ const SLEEP_OPTIONS = [0, 15, 30, 45, 60];
 const DOUBLE_TAP_MS = 260;
 const RIPPLE_MS = 430;
 
+// Desktop stage: the picture sits in a centered 16:9 box capped at this
+// width instead of stretching to whatever the window happens to be. The
+// window height is the hard limit, so short windows letterbox the sides.
+const STAGE_MAX_WIDTH = 1440;
+const STAGE_ASPECT = 16 / 9;
+
 // Wall-clock ad cadence: when the last ad was shown for a title, stored per
 // title. The countdown keeps running while the viewer is away, so returning
 // inside the window plays with no ads at all (see adIsDue in playback.ts).
@@ -110,6 +117,18 @@ const tapResponder = PanResponder.create({
   onPanResponderTerminate: () => tapActions.terminate?.(),
 });
 
+// Desktop deck volume track: press/drag anywhere on it to set the level.
+// Same per-instance wiring pattern as the scrub track above.
+const volumeActions = { grant: null, move: null, release: null, terminate: null };
+const volumeResponder = PanResponder.create({
+  onStartShouldSetPanResponder: () => true,
+  onMoveShouldSetPanResponder: () => true,
+  onPanResponderGrant: (e) => volumeActions.grant?.(e),
+  onPanResponderMove: (e) => volumeActions.move?.(e),
+  onPanResponderRelease: (e) => volumeActions.release?.(e),
+  onPanResponderTerminate: () => volumeActions.terminate?.(),
+});
+
 const EMPTY_LOAD = {
   id: null,
   error: null,
@@ -132,6 +151,18 @@ export default function Player() {
   const profile = useAuthStore((s) => s.profile);
   const insets = useSafeAreaInsets();
   const isDesktop = useIsDesktop();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+
+  // Desktop stage: a centered 16:9 box, at most STAGE_MAX_WIDTH wide and
+  // never taller than the window. Null off-desktop, where the player keeps
+  // its full-bleed layout.
+  const stageBox = useMemo(() => {
+    if (!isDesktop || windowWidth <= 0 || windowHeight <= 0) return null;
+    const width = Math.min(STAGE_MAX_WIDTH, windowWidth);
+    const height = width / STAGE_ASPECT;
+    if (height <= windowHeight) return { width, height };
+    return { width: windowHeight * STAGE_ASPECT, height: windowHeight };
+  }, [isDesktop, windowWidth, windowHeight]);
 
   // Ad-overlay "Go Premium" CTA: same Paystack flow as Profile, with the
   // player rendering its own alert (it has no gold AppAlert of its own).
@@ -192,7 +223,10 @@ export default function Player() {
   const [fullscreen, setFullscreen] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [speedSheet, setSpeedSheet] = useState(false);
+  // Desktop-only deck volume slider (a pointer wants a knob, not a swipe).
+  const [volumeLevel, setVolumeLevel] = useState(1);
   const scrubWidthRef = useRef(1);
+  const volumeWidthRef = useRef(1);
   const tapWidthRef = useRef(1);
   const tapHeightRef = useRef(1);
   const volumeRef = useRef(1);
@@ -222,6 +256,9 @@ export default function Player() {
   // what it paused, instead of clobbering a sleep-timer/manual pause).
   const pausedByBreakRef = useRef(false);
   const controlsTimerRef = useRef(null);
+  // Mirrors controlsVisible for callbacks that must not re-subscribe on
+  // every visibility flip (see showControls / toggleControls).
+  const controlsVisibleRef = useRef(false);
 
   const [subLang, setSubLang] = useState(null);
   const [subCues, setSubCues] = useState([]);
@@ -505,24 +542,72 @@ export default function Player() {
     phaseRef.current = phase;
   });
 
-  const showControls = useCallback(() => {
-    if (!mountedRef.current || lockedRef.current) return;
-    setControlsVisible(true);
+  // Desktop mouse affordances: which control the pointer is on (used to
+  // brighten its chrome) and whether it is parked on a control surface (the
+  // auto-hide tick waits while it is). Both are desktop-only, so mobile
+  // timing and paint stay exactly as they were.
+  const [hoveredControl, setHoveredControl] = useState(null);
+  const deckHoverRef = useRef(false);
+  const hoverProps = (id) =>
+    isDesktop
+      ? {
+          onMouseEnter: () => setHoveredControl(id),
+          onMouseLeave: () => setHoveredControl((prev) => (prev === id ? null : prev)),
+        }
+      : {};
+  const deckHoverProps = isDesktop
+    ? {
+        onMouseEnter: () => {
+          deckHoverRef.current = true;
+        },
+        onMouseLeave: () => {
+          deckHoverRef.current = false;
+        },
+      }
+    : {};
+
+  // One hide tick for every path that shows the controls. While the pointer
+  // rests on a control surface the tick re-arms instead of dismissing, so a
+  // mouse can always reach the button it is hovering.
+  const scheduleControlsHide = useCallback(() => {
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
-    controlsTimerRef.current = setTimeout(() => {
+    controlsTimerRef.current = setTimeout(function tick() {
+      if (deckHoverRef.current) {
+        controlsTimerRef.current = setTimeout(tick, CONTROLS_HIDE_MS);
+        return;
+      }
       setControlsVisible(false);
     }, CONTROLS_HIDE_MS);
   }, []);
 
+  const showControls = useCallback(() => {
+    if (!mountedRef.current || lockedRef.current) return;
+    // The deck unmounts while it may still be hovered (lock, ad break, end
+    // of stream), so no mouseleave arrives — drop the stale highlight when
+    // the controls come back up.
+    if (!controlsVisibleRef.current) setHoveredControl(null);
+    setControlsVisible(true);
+    scheduleControlsHide();
+  }, [scheduleControlsHide]);
+
   const toggleControls = useCallback(() => {
     if (lockedRef.current) return;
-    setControlsVisible((visible) => {
-      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
-      if (visible) return false;
-      controlsTimerRef.current = setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_MS);
-      return true;
-    });
-  }, []);
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    if (controlsVisibleRef.current) {
+      setControlsVisible(false);
+      return;
+    }
+    setHoveredControl(null);
+    setControlsVisible(true);
+    scheduleControlsHide();
+  }, [scheduleControlsHide]);
+
+  // Mirrors visibility (and drops the hover flag the moment the deck
+  // unmounts, since its mouseleave can no longer arrive).
+  useEffect(() => {
+    controlsVisibleRef.current = controlsVisible;
+    if (!controlsVisible) deckHoverRef.current = false;
+  }, [controlsVisible]);
 
   useEffect(() => {
     lockedRef.current = locked;
@@ -982,6 +1067,9 @@ export default function Player() {
       if (g.side === "right") {
         volumeRef.current = value;
         engineRef.current?.setVolume(value);
+        // Keeps the desktop deck slider honest when volume is swiped
+        // instead; the value renders nowhere off-desktop.
+        setVolumeLevel(value);
         showHud("volume", value);
       } else {
         brightnessRef.current = value;
@@ -1119,6 +1207,40 @@ export default function Player() {
     };
   }, [seekTo]);
 
+  // Desktop deck volume track: press/drag anywhere on it sets the level,
+  // same press-preview-commit shape as the scrub track (it only renders on
+  // desktop, so nothing is wired off-desktop).
+  useEffect(() => {
+    if (!isDesktop) return undefined;
+    const fractionFrom = (e) =>
+      Math.max(0, Math.min(1, e.nativeEvent.locationX / Math.max(1, volumeWidthRef.current)));
+    const flashHud = (value) => {
+      if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
+      if (mountedRef.current) setGestureHud({ type: "volume", value });
+      hudTimerRef.current = setTimeout(() => {
+        hudTimerRef.current = null;
+        if (mountedRef.current) setGestureHud(null);
+      }, 750);
+    };
+    const apply = (e) => {
+      const value = fractionFrom(e);
+      volumeRef.current = value;
+      engineRef.current?.setVolume(value);
+      setVolumeLevel(value);
+      flashHud(value);
+    };
+    volumeActions.grant = apply;
+    volumeActions.move = apply;
+    volumeActions.release = apply;
+    volumeActions.terminate = () => {};
+    return () => {
+      volumeActions.grant = null;
+      volumeActions.move = null;
+      volumeActions.release = null;
+      volumeActions.terminate = null;
+    };
+  }, [isDesktop]);
+
   const goBack = useCallback(() => {
     try {
       router.back();
@@ -1173,9 +1295,13 @@ export default function Player() {
   const displayTime = scrub ? scrub.time : position;
   const activeCue = subCues.length > 0 ? cueAt(subCues, position + subOffset) : null;
 
-  return (
-    <View style={[styles.root, isDesktop && styles.rootWide]}>
-      <StatusBar style="light" />
+  // Desktop: the picture and everything that rides on it (gesture layers,
+  // controls, subtitles) lives inside one centered 16:9 stage; page-level
+  // overlays (loading / finished / error cards, ads, sheets) stay full-window.
+  // Mobile renders the exact same tree as always - the wrapper only exists on
+  // desktop.
+  const stageContent = (
+    <>
       {stream && movie && !showError ? (
         <PlayerEngine
           url={stream.url}
@@ -1290,23 +1416,30 @@ export default function Player() {
             style={[
               styles.topBar,
               { paddingTop: insets.top + 8, paddingLeft: insets.left + 14, paddingRight: insets.right + 14 },
+              isDesktop && {
+                paddingTop: insets.top + 14,
+                paddingLeft: insets.left + 26,
+                paddingRight: insets.right + 26,
+              },
             ]}
             pointerEvents="box-none"
+            {...deckHoverProps}
           >
             <TouchableOpacity
-              style={styles.glassBtn}
+              style={[styles.glassBtn, isDesktop && hoveredControl === "back" && styles.glassBtnHover]}
               onPress={goBack}
+              {...hoverProps("back")}
               accessibilityRole="button"
               accessibilityLabel="Leave player"
             >
-              <Ionicons name="chevron-back" size={23} color="#fff" />
+              <Ionicons name="chevron-back" size={isDesktop ? 26 : 23} color="#fff" />
             </TouchableOpacity>
             <View style={styles.topTitles}>
-              <Text numberOfLines={1} style={styles.title}>
+              <Text numberOfLines={1} style={[styles.title, isDesktop && styles.titleWide]}>
                 {title}
               </Text>
               {movieMeta ? (
-                <Text numberOfLines={1} style={styles.topMeta}>
+                <Text numberOfLines={1} style={[styles.topMeta, isDesktop && styles.topMetaWide]}>
                   {movieMeta}
                 </Text>
               ) : null}
@@ -1321,6 +1454,7 @@ export default function Player() {
             <TouchableOpacity
               onPress={togglePlay}
               activeOpacity={0.9}
+              {...hoverProps("play")}
               accessibilityRole="button"
               accessibilityLabel={playing ? "Pause" : "Play"}
             >
@@ -1328,11 +1462,15 @@ export default function Player() {
                 colors={GOLD_GRADIENT}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
-                style={styles.playBtn}
+                style={[
+                  styles.playBtn,
+                  isDesktop && styles.playBtnWide,
+                  isDesktop && hoveredControl === "play" && styles.playBtnHover,
+                ]}
               >
                 <Ionicons
                   name={playing ? "pause" : "play"}
-                  size={25}
+                  size={isDesktop ? 32 : 25}
                   color="#0a0a0a"
                   style={playing ? undefined : styles.playIconNudge}
                 />
@@ -1342,35 +1480,54 @@ export default function Player() {
 
           <SafeAreaView
             edges={["bottom"]}
-            style={[styles.bottomWrap, { paddingLeft: 12 + insets.left, paddingRight: 12 + insets.right }]}
+            style={[
+              styles.bottomWrap,
+              { paddingLeft: 12 + insets.left, paddingRight: 12 + insets.right },
+              isDesktop && styles.bottomWrapWide,
+              isDesktop && { paddingLeft: 30 + insets.left, paddingRight: 30 + insets.right },
+            ]}
             pointerEvents="box-none"
           >
             <Animated.View
               entering={FadeInUp.duration(280).delay(40)}
-              style={styles.bottomDeck}
+              style={[styles.bottomDeck, isDesktop && styles.bottomDeckWide]}
+              {...deckHoverProps}
             >
-              <View style={styles.scrubRow}>
-                <Text style={styles.time}>{formatTime(displayTime)}</Text>
+              <View style={[styles.scrubRow, isDesktop && styles.scrubRowWide]}>
+                <Text style={[styles.time, isDesktop && styles.timeWide]}>{formatTime(displayTime)}</Text>
                 <View
-                  style={styles.track}
+                  style={[styles.track, isDesktop && styles.trackWide]}
                   onLayout={(e) => {
                     scrubWidthRef.current = e.nativeEvent.layout.width || 1;
                   }}
                   {...scrubResponder.panHandlers}
+                  {...hoverProps("scrub")}
                   accessibilityRole="button"
                   accessibilityLabel={`Seek. ${formatTime(displayTime)} of ${formatTime(duration)}`}
                 >
-                  <View style={styles.trackBg} />
+                  <View
+                    style={[
+                      styles.trackBg,
+                      isDesktop && styles.trackBgWide,
+                      isDesktop && hoveredControl === "scrub" && styles.trackBgHover,
+                    ]}
+                  />
                   <LinearGradient
                     colors={GOLD_GRADIENT}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 0 }}
-                    style={[styles.trackPlayed, { width: `${progressFraction * 100}%` }]}
+                    style={[
+                      styles.trackPlayed,
+                      isDesktop && styles.trackPlayedWide,
+                      { width: `${progressFraction * 100}%` },
+                    ]}
                   />
                   <View
                     style={[
                       styles.trackThumb,
                       scrub && styles.trackThumbActive,
+                      isDesktop && styles.trackThumbWide,
+                      isDesktop && scrub && styles.trackThumbActiveWide,
                       { left: `${progressFraction * 100}%` },
                     ]}
                   />
@@ -1383,44 +1540,109 @@ export default function Player() {
                     </Animated.View>
                   ) : null}
                 </View>
-                <Text style={[styles.time, styles.timeRight]}>{formatTime(duration)}</Text>
+                <Text style={[styles.time, styles.timeRight, isDesktop && styles.timeWide]}>
+                  {formatTime(duration)}
+                </Text>
               </View>
 
-              <View style={styles.deckMetaRow}>
+              <View style={[styles.deckMetaRow, isDesktop && styles.deckMetaRowWide]}>
                 <TouchableOpacity
-                  style={[styles.deckPill, speed !== 1 && styles.deckPillGold]}
+                  style={[
+                    styles.deckPill,
+                    speed !== 1 && styles.deckPillGold,
+                    isDesktop && styles.deckPillWide,
+                    isDesktop &&
+                      hoveredControl === "speed" &&
+                      (speed !== 1 ? styles.pillHoverGold : styles.pillHover),
+                  ]}
                   onPress={() => {
                     showControls();
                     setSpeedSheet(true);
                   }}
+                  {...hoverProps("speed")}
                   accessibilityRole="button"
                   accessibilityLabel={`Playback speed ${speed}x`}
                 >
                   <Ionicons
                     name="speedometer-outline"
-                    size={15}
-                    color={speed !== 1 ? GOLD : "rgba(255,255,255,0.85)"}
+                    size={isDesktop ? 20 : 15}
+                    color={
+                      speed !== 1
+                        ? GOLD
+                        : hoveredControl === "speed"
+                          ? "#fff"
+                          : "rgba(255,255,255,0.85)"
+                    }
                   />
-                  <Text style={[styles.deckPillText, speed !== 1 && styles.deckPillTextGold]}>
+                  <Text
+                    style={[
+                      styles.deckPillText,
+                      speed !== 1 && styles.deckPillTextGold,
+                      isDesktop && styles.deckPillTextWide,
+                    ]}
+                  >
                     {speed}×
                   </Text>
                 </TouchableOpacity>
 
-                <View style={styles.deckRight}>
+                <View style={[styles.deckRight, isDesktop && styles.deckRightWide]}>
+                  {isDesktop ? (
+                    <View
+                      style={styles.volumeTrack}
+                      onLayout={(e) => {
+                        volumeWidthRef.current = e.nativeEvent.layout.width || 1;
+                      }}
+                      {...volumeResponder.panHandlers}
+                      {...hoverProps("volume")}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Volume ${Math.round(volumeLevel * 100)} percent`}
+                    >
+                      <View
+                        style={[
+                          styles.volumeBg,
+                          hoveredControl === "volume" && styles.volumeBgHover,
+                        ]}
+                      />
+                      <LinearGradient
+                        colors={GOLD_GRADIENT}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={[styles.volumeFill, { width: `${volumeLevel * 100}%` }]}
+                      />
+                      <View style={[styles.volumeThumb, { left: `${volumeLevel * 100}%` }]} />
+                    </View>
+                  ) : null}
+
                   <TouchableOpacity
-                    style={styles.iconPill}
+                    style={[
+                      styles.iconPill,
+                      isDesktop && styles.iconPillWide,
+                      isDesktop && hoveredControl === "lock" && styles.pillHover,
+                    ]}
                     onPress={() => {
                       setLocked(true);
                       setControlsVisible(false);
                     }}
+                    {...hoverProps("lock")}
                     accessibilityRole="button"
                     accessibilityLabel="Lock player controls"
                   >
-                    <Ionicons name="lock-closed-outline" size={16} color="rgba(255,255,255,0.9)" />
+                    <Ionicons
+                      name="lock-closed-outline"
+                      size={isDesktop ? 22 : 16}
+                      color={hoveredControl === "lock" ? "#fff" : "rgba(255,255,255,0.9)"}
+                    />
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={[styles.iconPill, sleepMinutes > 0 && styles.deckPillGold]}
+                    style={[
+                      styles.iconPill,
+                      sleepMinutes > 0 && styles.deckPillGold,
+                      isDesktop && styles.iconPillWide,
+                      isDesktop &&
+                        hoveredControl === "sleep" &&
+                        (sleepMinutes > 0 ? styles.pillHoverGold : styles.pillHover),
+                    ]}
                     onPress={() => {
                       showControls();
                       setSleepMinutes((mins) => {
@@ -1428,6 +1650,7 @@ export default function Player() {
                         return SLEEP_OPTIONS[(index + 1) % SLEEP_OPTIONS.length];
                       });
                     }}
+                    {...hoverProps("sleep")}
                     accessibilityRole="button"
                     accessibilityLabel={
                       sleepMinutes > 0 ? `Sleep timer: ${sleepMinutes} minutes` : "Set sleep timer"
@@ -1435,64 +1658,118 @@ export default function Player() {
                   >
                     <Ionicons
                       name="moon-outline"
-                      size={16}
-                      color={sleepMinutes > 0 ? GOLD : "rgba(255,255,255,0.9)"}
+                      size={isDesktop ? 22 : 16}
+                      color={
+                        sleepMinutes > 0
+                          ? GOLD
+                          : hoveredControl === "sleep"
+                            ? "#fff"
+                            : "rgba(255,255,255,0.9)"
+                      }
                     />
                     {sleepMinutes > 0 ? (
-                      <Text style={styles.deckPillTextGold}>{sleepMinutes}m</Text>
+                      <Text style={[styles.deckPillTextGold, isDesktop && styles.deckPillTextWide]}>
+                        {sleepMinutes}m
+                      </Text>
                     ) : null}
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={[styles.iconPill, fullscreen && styles.deckPillGold]}
+                    style={[
+                      styles.iconPill,
+                      fullscreen && styles.deckPillGold,
+                      isDesktop && styles.iconPillWide,
+                      isDesktop &&
+                        hoveredControl === "fs" &&
+                        (fullscreen ? styles.pillHoverGold : styles.pillHover),
+                    ]}
                     onPress={() => setFullscreenMode(!fullscreen)}
+                    {...hoverProps("fs")}
                     accessibilityRole="button"
                     accessibilityLabel={fullscreen ? "Exit full screen" : "View full screen"}
                   >
                     <Ionicons
                       name={fullscreen ? "contract" : "expand"}
-                      size={16}
-                      color={fullscreen ? GOLD : "rgba(255,255,255,0.9)"}
+                      size={isDesktop ? 22 : 16}
+                      color={
+                        fullscreen ? GOLD : hoveredControl === "fs" ? "#fff" : "rgba(255,255,255,0.9)"
+                      }
                     />
                   </TouchableOpacity>
 
                   {qualitySelectable ? (
                     <TouchableOpacity
-                      style={[styles.deckPill, !quality.auto && styles.deckPillGold]}
+                      style={[
+                        styles.deckPill,
+                        !quality.auto && styles.deckPillGold,
+                        isDesktop && styles.deckPillWide,
+                        isDesktop &&
+                          hoveredControl === "quality" &&
+                          (!quality.auto ? styles.pillHoverGold : styles.pillHover),
+                      ]}
                       onPress={() => {
                         showControls();
                         setQualitySheet(true);
                       }}
+                      {...hoverProps("quality")}
                       accessibilityRole="button"
                       accessibilityLabel={`Quality: ${qualityPill}`}
                     >
                       <Text
-                        style={[styles.deckPillText, !quality.auto && styles.deckPillTextGold]}
+                        style={[
+                          styles.deckPillText,
+                          !quality.auto && styles.deckPillTextGold,
+                          isDesktop && styles.deckPillTextWide,
+                        ]}
                       >
                         {qualityPill}
                       </Text>
                       <Ionicons
                         name="chevron-down"
-                        size={13}
-                        color={!quality.auto ? GOLD : "rgba(255,255,255,0.8)"}
+                        size={isDesktop ? 18 : 13}
+                        color={
+                          !quality.auto
+                            ? GOLD
+                            : hoveredControl === "quality"
+                              ? "#fff"
+                              : "rgba(255,255,255,0.8)"
+                        }
                       />
                     </TouchableOpacity>
                   ) : qualityStatic ? (
-                    <View style={styles.deckPill}>
-                      <Text style={styles.deckPillText}>{qualityPill}</Text>
+                    <View style={[styles.deckPill, isDesktop && styles.deckPillWide]}>
+                      <Text style={[styles.deckPillText, isDesktop && styles.deckPillTextWide]}>
+                        {qualityPill}
+                      </Text>
                     </View>
                   ) : null}
 
                   <TouchableOpacity
-                    style={[styles.ccBtn, subLang && styles.ccBtnActive]}
+                    style={[
+                      styles.ccBtn,
+                      subLang && styles.ccBtnActive,
+                      isDesktop && styles.ccBtnWide,
+                      isDesktop &&
+                        hoveredControl === "cc" &&
+                        (subLang ? styles.pillHoverGold : styles.pillHover),
+                    ]}
                     onPress={() => {
                       setSubsError(null);
                       setSubtitleSheet(true);
                     }}
+                    {...hoverProps("cc")}
                     accessibilityRole="button"
                     accessibilityLabel="Subtitle settings"
                   >
-                    <Text style={[styles.ccText, subLang && styles.ccTextActive]}>CC</Text>
+                    <Text
+                      style={[
+                        styles.ccText,
+                        subLang && styles.ccTextActive,
+                        isDesktop && styles.ccTextWide,
+                      ]}
+                    >
+                      CC
+                    </Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -1503,15 +1780,29 @@ export default function Player() {
 
       {/* Subtitles */}
       {activeCue && phase === "playing" && !adBreak ? (
-        <View style={styles.subtitleLayer} pointerEvents="none">
-          <Text style={[styles.subtitleText, { fontSize: 16 * subScale, lineHeight: 22 * subScale }]}>
+        <View
+          style={[styles.subtitleLayer, isDesktop && styles.subtitleLayerWide]}
+          pointerEvents="none"
+        >
+          <Text
+            style={[
+              styles.subtitleText,
+              {
+                fontSize: (isDesktop ? 20 : 16) * subScale,
+                lineHeight: (isDesktop ? 28 : 22) * subScale,
+              },
+            ]}
+          >
             {activeCue}
           </Text>
         </View>
       ) : null}
 
       {subsLoading && !showError ? (
-        <View style={styles.subtitleLayer} pointerEvents="none">
+        <View
+          style={[styles.subtitleLayer, isDesktop && styles.subtitleLayerWide]}
+          pointerEvents="none"
+        >
           <View style={styles.subtitlePill}>
             <ActivityIndicator size="small" color={GOLD} />
             <Text style={styles.subtitlePillText}>
@@ -1520,6 +1811,19 @@ export default function Player() {
           </View>
         </View>
       ) : null}
+    </>
+  );
+
+  return (
+    <View style={[styles.root, isDesktop && styles.rootWide]}>
+      <StatusBar style="light" />
+      {isDesktop ? (
+        <View style={[styles.stage, stageBox]} onMouseMove={showControls}>
+          {stageContent}
+        </View>
+      ) : (
+        stageContent
+      )}
 
       {/* Loading / waiting-for-ad */}
       {busy && !showError ? (
@@ -1700,7 +2004,20 @@ export default function Player() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#000" },
-  rootWide: { maxWidth: 1200, width: "100%", alignSelf: "center" },
+  // Desktop: the page is a full-bleed black canvas; the picture itself sits
+  // in the centered stage below, so title bar, deck and subtitles all line up
+  // on that one column.
+  rootWide: { justifyContent: "center" },
+  // The centered 16:9 stage (width/height come from stageBox, which clamps
+  // to STAGE_MAX_WIDTH and the window height).
+  stage: {
+    position: "relative",
+    width: "100%",
+    aspectRatio: STAGE_ASPECT,
+    maxHeight: "100%",
+    alignSelf: "center",
+    backgroundColor: "#000",
+  },
   tapLayer: { ...StyleSheet.absoluteFill, zIndex: 1 },
   controls: { ...StyleSheet.absoluteFill, zIndex: 10, justifyContent: "space-between" },
   topScrim: { position: "absolute", top: 0, left: 0, right: 0, height: 160 },
@@ -2014,4 +2331,100 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.28)",
   },
   doneGhostText: { color: "#fff", fontSize: 14.5, fontWeight: "700" },
+
+  // ---- Desktop (isDesktop only) ------------------------------------------
+  // Mouse-sized chrome: ~44x44 hit areas, larger icons, a taller scrub track
+  // with a bigger knob, and a little extra breathing room in the deck.
+  glassBtnHover: {
+    backgroundColor: "rgba(38,38,48,0.85)",
+    borderColor: "rgba(255,255,255,0.34)",
+  },
+  pillHover: {
+    backgroundColor: "rgba(255,255,255,0.20)",
+    borderColor: "rgba(255,255,255,0.36)",
+  },
+  pillHoverGold: {
+    backgroundColor: "rgba(232,184,74,0.30)",
+    borderColor: "rgba(232,184,74,0.9)",
+  },
+  titleWide: { fontSize: 18.5 },
+  topMetaWide: { fontSize: 12.5 },
+  playBtnWide: { width: 76, height: 76, borderRadius: 38 },
+  playBtnHover: {
+    borderWidth: 2.5,
+    borderColor: "rgba(255,255,255,0.75)",
+    shadowOpacity: 0.85,
+  },
+  bottomWrapWide: { paddingBottom: 18 },
+  bottomDeckWide: {
+    borderRadius: 28,
+    paddingHorizontal: 26,
+    paddingTop: 16,
+    paddingBottom: 20,
+    gap: 10,
+  },
+  scrubRowWide: { gap: 16 },
+  timeWide: { fontSize: 13.5, minWidth: 58 },
+  trackWide: { height: 48 },
+  trackBgWide: { height: 8, borderRadius: 4 },
+  trackBgHover: { backgroundColor: "rgba(255,255,255,0.36)" },
+  trackPlayedWide: { height: 8, borderRadius: 4 },
+  trackThumbWide: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 4,
+    marginLeft: -11,
+  },
+  trackThumbActiveWide: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    marginLeft: -15,
+  },
+  deckMetaRowWide: { marginTop: 6 },
+  deckRightWide: { gap: 12 },
+  deckPillWide: { height: 44, paddingHorizontal: 16, gap: 8 },
+  deckPillTextWide: { fontSize: 14.5 },
+  iconPillWide: { width: 44, height: 44 },
+  ccBtnWide: { height: 44, minWidth: 58, paddingHorizontal: 14 },
+  ccTextWide: { fontSize: 14 },
+  // Keeps subtitles clear of the taller desktop deck.
+  subtitleLayerWide: { bottom: 180 },
+  // Deck volume slider: press/drag anywhere on the track.
+  volumeTrack: {
+    width: 108,
+    height: 44,
+    justifyContent: "center",
+  },
+  volumeBg: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(255,255,255,0.22)",
+  },
+  volumeBgHover: { backgroundColor: "rgba(255,255,255,0.36)" },
+  volumeFill: {
+    position: "absolute",
+    left: 0,
+    height: 6,
+    borderRadius: 3,
+  },
+  volumeThumb: {
+    position: "absolute",
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#fff",
+    borderWidth: 3,
+    borderColor: GOLD,
+    marginLeft: -9,
+    shadowColor: "#000",
+    shadowOpacity: 0.4,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
+  },
 });
