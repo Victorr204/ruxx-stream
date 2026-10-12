@@ -80,9 +80,20 @@ jobs:
         working-directory: desktop
         # CSC_IDENTITY_AUTO_DISCOVERY=false skips macOS signing attempts
         # (no Apple certificate yet — see desktop/electron-builder.yml).
+        # electron-builder downloads ~200 MB of Electron + tooling per run;
+        # a dropped download aborts the whole job, so retry before failing.
+        shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run dist
+        run: |
+          for attempt in 1 2 3; do
+            if npm run dist; then
+              exit 0
+            fi
+            echo "::warning::installer build failed (attempt $attempt of 3), retrying in 15s"
+            sleep 15
+          done
+          exit 1
 
       - uses: actions/upload-artifact@v7
         with:
