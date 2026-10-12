@@ -9,10 +9,13 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          # 24 is required: the *.test.mjs files import .ts sources directly
+          # and Node runs them via built-in type stripping, which Node 20
+          # lacks (ERR_UNKNOWN_FILE_EXTENSION).
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run typecheck
