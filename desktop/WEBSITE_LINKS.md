@@ -29,22 +29,19 @@ macOS (Intel)           https://github.com/Victorr204/ruxx-stream/releases/lates
 Pinning a specific build instead: use the versioned files,
 `.../releases/download/v1.0.1/ruxx-stream-setup-1.0.0-x64.exe`.
 
-## 2. Self-hosted on your own server (optional, enables in-app auto-update)
+## 2. No server needed — the app auto-updates from GitHub
 
-Copying the files next to the site under `/downloads` is what makes the desktop
-app's **auto-updater** work (it polls
-`https://app.ruxxdigital.name.ng/downloads/latest.yml`). Set the
-`RUXX_DEPLOY_HOST/USER/PATH/KEY` repository secrets and the `deploy` job in
-`.github/workflows/desktop.yml` does this automatically on every tag push.
+The site is served by Vercel (static hosting — there is no SSH and therefore
+no `/downloads` folder to maintain). The desktop app's updater is pointed at
+GitHub Releases instead (`publish.provider: github` in
+`desktop/electron-builder.yml`): every tag push attaches `latest.yml`, the
+blockmaps and the installers to a release, and installed apps pick the update
+up from there.
 
-```
-/downloads/ruxx-stream-setup-<version>-x64.exe   ← Windows (most laptops)
-/downloads/ruxx-stream-setup-<version>-arm64.exe ← Windows on ARM
-/downloads/ruxx-stream-<version>-arm64.dmg       ← macOS (Apple Silicon: M1–M4)
-/downloads/ruxx-stream-<version>-x64.dmg         ← macOS (Intel)
-/downloads/latest.yml                            ← auto-updater feed (keep!)
-/downloads/*.blockmap                            ← auto-updater deltas (keep!)
-```
+*(If the site ever moves to a host with SSH, the `deploy` job in
+`.github/workflows/desktop.yml` can mirror those files to `/downloads` by
+setting the `RUXX_DEPLOY_HOST/USER/PATH/KEY` secrets. It skips itself today
+because no host is configured — that's expected.)*
 
 ## 3. Buttons block (plain HTML — works anywhere)
 
@@ -132,6 +129,6 @@ Apple Silicon from Intel, so the Apple Silicon DMG is the sensible default.
   Premium checkout (Paystack opens in the user's default browser).
 - **Premium members** stream ad-free and can save titles offline
   (encrypted at rest).
-- The app **auto-updates** itself — but only from the `/downloads` files in
-  option 2. Without those, installed copies stay on the version they were
-  downloaded with.
+- The app **auto-updates** itself from the latest GitHub Release — nothing to
+  host and nothing to copy. Push a new tag and installed copies offer the
+  update on their next launch.

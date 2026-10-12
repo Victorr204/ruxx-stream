@@ -66,8 +66,12 @@ dmg:
   # unchanged (the temp volume only exists while the image is being built).
   filesystem: APFS
 
-# Auto-update feed: the same /downloads folder the installer links point at
-# (latest.yml + blockmaps must be uploaded next to the installers).
+# Auto-update feed. The site lives on Vercel — there is no server that can
+# host /downloads — but the release job already attaches latest.yml, the
+# blockmaps and the installers to a GitHub Release on every tag push, so the
+# updater reads from there. (--publish never in the dist script keeps builds
+# from *creating* releases; this block only embeds the update URL in the app.)
 publish:
-  provider: generic
-  url: https://app.ruxxdigital.name.ng/downloads
+  provider: github
+  owner: Victorr204
+  repo: ruxx-stream
