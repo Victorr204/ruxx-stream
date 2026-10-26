@@ -42,7 +42,7 @@ async function functionErrorDetail(error: unknown): Promise<string | null> {
   try {
     const body = (await context.json()) as { error?: string; configured?: boolean };
     if (body?.configured === false) {
-      return "TMDb isn't configured yet — set the TMDB_API_KEY secret on the tmdb function.";
+      return "TMDb isn't configured yet — set the TMDB_API_KEY secret on the tmdb function (either a v3 API key or a v4 read access token) and redeploy it.";
     }
     return typeof body?.error === "string" ? body.error : null;
   } catch {

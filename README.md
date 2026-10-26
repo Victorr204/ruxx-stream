@@ -108,13 +108,20 @@ presigned GET inside the private bucket, so nothing ever goes public).
 
 `tmdb` is the catalogue import proxy, and it stays JWT-verified: it reads the
 caller's own session and re-checks `profiles.role` before touching TMDb, so
-only an admin can spend the key. The key itself is a secret, never a client
-env var (`EXPO_PUBLIC_*` is compiled into the public JS):
+only an admin can spend the key. The credential itself is a secret, never a
+client env var (`EXPO_PUBLIC_*` is compiled into the public JS):
 
 ```bash
-# free key: https://www.themoviedb.org/settings/api (approve the terms)
+# free credentials: https://www.themoviedb.org/settings/api (approve the terms)
 supabase secrets set TMDB_API_KEY=your_v3_key
+# or, if TMDB gave you a v4 "API Read Access Token" (the long JWT starting eyJ):
+supabase secrets set TMDB_API_KEY=eyJ...
 ```
+
+Both forms work: the function detects the v4 JWT by its `eyJ` prefix and sends
+it as `Authorization: Bearer`, which TMDb accepts on the same v3 endpoints.
+A v4 token is never placed in the query string — query parameters leak into
+logs and proxies, and a bearer token does not belong there.
 
 Without the secret the function reports `configured: false` and the admin
 panel shows that instead of an empty search.

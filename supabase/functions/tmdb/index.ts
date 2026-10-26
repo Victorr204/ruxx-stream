@@ -23,7 +23,18 @@ import { json, preflight } from "../_shared/cors.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-const TMDB_API_KEY = Deno.env.get("TMDB_API_KEY") ?? "";
+
+// TMDB_API_KEY accepts either credential TMDb hands out:
+//
+//   * a v3 key  -> a short hex string, sent as `?api_key=`
+//   * a v4 token -> a JWT that starts with "eyJ", sent as `Authorization: Bearer`
+//
+// TMDb accepts the v4 read-access token against the v3 endpoints, so both forms
+// work against the same API surface and the rest of this file never has to care
+// which one the operator happened to paste. Auto-detecting beats making the
+// operator pick a second env var for a decision they shouldn't have to make.
+const TMDB_CREDENTIAL = Deno.env.get("TMDB_API_KEY") ?? "";
+const TMDB_IS_V4_TOKEN = TMDB_CREDENTIAL.startsWith("eyJ");
 
 const TMDB_API = "https://api.themoviedb.org/3";
 const IMAGE_BASE = "https://image.tmdb.org/t/p";
@@ -64,11 +75,17 @@ type TmdbEnvelope<T> = T & { status_message?: string };
 
 async function tmdb<T>(path: string, params: Record<string, string>): Promise<T> {
   const url = new URL(`${TMDB_API}${path}`);
-  url.searchParams.set("api_key", TMDB_API_KEY);
   url.searchParams.set("language", "en-US");
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
 
-  const res = await fetch(url);
+  // A v4 JWT never goes in the query string — query params end up in logs,
+  // proxies, and referrer headers. The v3 key is designed to live there.
+  const headers: Record<string, string> = TMDB_IS_V4_TOKEN
+    ? { Authorization: `Bearer ${TMDB_CREDENTIAL}`, Accept: "application/json" }
+    : { Accept: "application/json" };
+  if (!TMDB_IS_V4_TOKEN) url.searchParams.set("api_key", TMDB_CREDENTIAL);
+
+  const res = await fetch(url, { headers });
   const body = (await res.json()) as TmdbEnvelope<T>;
   if (!res.ok) throw new Error(body?.status_message ?? `TMDb responded ${res.status}`);
   return body as T;
@@ -101,7 +118,7 @@ Deno.serve(async (req) => {
   if (pre) return pre;
 
   try {
-    if (!TMDB_API_KEY) return json({ configured: false });
+    if (!TMDB_CREDENTIAL) return json({ configured: false });
 
     const authorization = req.headers.get("Authorization");
     if (!authorization) return json({ error: "Missing Authorization header" }, 401);
