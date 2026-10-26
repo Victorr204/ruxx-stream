@@ -447,9 +447,20 @@ export type AdminStats = {
   premium_users: number;
   plays_30d: number;
   ad_impressions_30d: number;
+  // Business metrics. Revenue is summed server-side from Paystack
+  // charge.success events only — the payload holds kobo, these are naira.
+  revenue_total_naira: number;
+  revenue_30d_naira: number;
+  revenue_90d_naira: number;
+  charges_total: number;
+  charges_30d: number;
+  paying_customers: number;
+  avg_charge_naira: number;
+  new_users_30d: number;
+  churn_events_30d: number;
 };
 
-/** Dashboard counters (movies, users, premium, plays, ad impressions). */
+/** Dashboard counters (money, subscribers, users, plays, ad impressions). */
 export async function fetchAdminStats(): Promise<AdminStats> {
   const { data, error } = await getSupabase().rpc("admin_stats");
   if (error) throw new Error(message(error));

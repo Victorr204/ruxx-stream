@@ -15,14 +15,23 @@ type AlertState = {
 
 const STALE_AFTER = Date.now() - 30 * 86_400_000;
 
-function StatTile({ label, value, icon }: { label: string; value: string | number; icon: keyof typeof Ionicons.glyphMap }) {
+/** Formats a naira amount with grouping and no decimals for large sums. */
+function naira(value: number | null | undefined): string {
+  const amount = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  const rounded = Math.round(amount);
+  return `₦${rounded.toLocaleString("en-NG")}`;
+}
+
+function StatTile({ label, value, icon, accent }: { label: string; value: string | number; icon: keyof typeof Ionicons.glyphMap; accent?: boolean }) {
   const { theme } = useTheme();
   return (
-    <View style={[styles.tile, { backgroundColor: theme.card }]}>
-      <View style={styles.tileIcon}>
-        <Ionicons name={icon} size={15} color={GOLD} />
+    <View style={[styles.tile, { backgroundColor: theme.card }, accent && styles.tileAccent]}>
+      <View style={[styles.tileIcon, accent && styles.tileIconAccent]}>
+        <Ionicons name={icon} size={15} color={accent ? "#111" : GOLD} />
       </View>
-      <Text style={[styles.tileValue, { color: theme.text }]}>{value}</Text>
+      <Text style={[styles.tileValue, { color: theme.text }]} numberOfLines={1} adjustsFontSizeToFit>
+        {value}
+      </Text>
       <Text style={[styles.tileLabel, { color: theme.placeholder }]}>{label}</Text>
     </View>
   );
@@ -66,6 +75,11 @@ export default function AnalyticsPanel() {
     );
   });
 
+  // Share of all accounts that currently pay. Guarded against a zero
+  // denominator so an empty platform reads as 0% rather than NaN.
+  const totalUsers = stats?.users_total ?? 0;
+  const conversion = totalUsers > 0 ? Math.round(((stats?.premium_users ?? 0) / totalUsers) * 100) : 0;
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -85,12 +99,28 @@ export default function AnalyticsPanel() {
         onClose={() => setAlert((a) => ({ ...a, visible: false }))}
       />
 
-      <Text style={[styles.sectionTitle, { color: theme.placeholder }]}>Platform</Text>
+      <Text style={[styles.sectionTitle, { color: theme.placeholder }]}>Revenue</Text>
       <View style={styles.tiles}>
-        <StatTile label="Movies" value={stats?.movies_total ?? 0} icon="film-outline" />
-        <StatTile label="Active" value={stats?.movies_active ?? 0} icon="checkmark-circle-outline" />
-        <StatTile label="Users" value={stats?.users_total ?? 0} icon="people-outline" />
-        <StatTile label="Premium" value={stats?.premium_users ?? 0} icon="diamond-outline" />
+        <StatTile label="Total made" value={naira(stats?.revenue_total_naira)} icon="cash-outline" accent />
+        <StatTile label="Last 30 days" value={naira(stats?.revenue_30d_naira)} icon="calendar-outline" accent />
+        <StatTile label="Last 90 days" value={naira(stats?.revenue_90d_naira)} icon="calendar-clear-outline" />
+        <StatTile label="Avg charge" value={naira(stats?.avg_charge_naira)} icon="pricetag-outline" />
+        <StatTile label="Charges" value={stats?.charges_total ?? 0} icon="card-outline" />
+        <StatTile label="Payers" value={stats?.paying_customers ?? 0} icon="person-add-outline" />
+      </View>
+
+      <Text style={[styles.sectionTitle, { color: theme.placeholder }]}>Subscribers</Text>
+      <View style={styles.tiles}>
+        <StatTile label="Active premium" value={stats?.premium_users ?? 0} icon="diamond-outline" accent />
+        <StatTile label="Total accounts" value={stats?.users_total ?? 0} icon="people-outline" />
+        <StatTile label="New (30d)" value={stats?.new_users_30d ?? 0} icon="person-add-outline" />
+        <StatTile label="Churn events (30d)" value={stats?.churn_events_30d ?? 0} icon="person-remove-outline" />
+        <StatTile label="Charges (30d)" value={stats?.charges_30d ?? 0} icon="card-outline" />
+        <StatTile label="Conversion" value={`${conversion}%`} icon="pie-chart-outline" />
+      </View>
+
+      <Text style={[styles.sectionTitle, { color: theme.placeholder }]}>Engagement</Text>
+      <View style={styles.tiles}>
         <StatTile label="Plays (30d)" value={stats?.plays_30d ?? 0} icon="play-outline" />
         <StatTile label="Ad impressions (30d)" value={stats?.ad_impressions_30d ?? 0} icon="megaphone-outline" />
       </View>
@@ -170,6 +200,7 @@ const styles = StyleSheet.create({
     padding: 13,
     gap: 6,
   },
+  tileAccent: { borderWidth: 1, borderColor: "rgba(232,184,74,0.45)" },
   tileIcon: {
     width: 30,
     height: 30,
@@ -178,6 +209,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "rgba(232,184,74,0.10)",
   },
+  tileIconAccent: { backgroundColor: GOLD },
   tileValue: { fontSize: 19, fontWeight: "900", letterSpacing: -0.3 },
   tileLabel: { fontSize: 10.5, fontWeight: "700", letterSpacing: 0.4 },
 
