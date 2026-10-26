@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useTheme } from "../../context/ThemeContext";
+import { TMDB_ATTRIBUTION } from "../lib/tmdb";
 
 export type LegalSection = {
   heading: string;
@@ -57,6 +58,9 @@ export default function LegalScreen({ title, updated, intro, sections }: Props) 
           <Text style={[styles.foot, { color: theme.placeholder }]}>
             Questions about this document? Reach us from the Profile screen.
           </Text>
+          {/* Catalogue metadata and artwork come from TMDb, which requires this
+              attribution on any product that uses its data. */}
+          <Text style={[styles.foot, { color: theme.placeholder }]}>{TMDB_ATTRIBUTION}</Text>
         </Animated.View>
       </ScrollView>
     </SafeAreaView>

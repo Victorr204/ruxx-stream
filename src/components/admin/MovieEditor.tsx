@@ -36,6 +36,8 @@ import {
 } from "../../lib/upload";
 import { formatBytes } from "../../lib/downloads";
 import { SUBTITLE_LANGUAGES, languageLabel, parseSubtitles } from "../../lib/subtitles";
+import { matchGenresByName, type TmdbImport as TmdbImportPayload } from "../../lib/tmdb";
+import TmdbImport from "./TmdbImport";
 import type { Genre } from "../../lib/types";
 
 type Props = {
@@ -150,6 +152,9 @@ export default function MovieEditor({ movie, genres, onClose, onSaved, onError }
   } | null>(null);
   const [subLang, setSubLang] = useState<string | null>(null);
   const [subBusy, setSubBusy] = useState(false);
+  // The TMDb panel only exists for new titles — importing over an edited row
+  // would quietly replace work that is already in the form.
+  const [showImport, setShowImport] = useState(false);
 
   const movieId = movie?.id ?? null;
   const subtitles = subtitleList && subtitleList.movieId === movieId ? subtitleList.rows : [];
@@ -168,6 +173,28 @@ export default function MovieEditor({ movie, genres, onClose, onSaved, onError }
   }, [movieId]);
 
   const set = (patch: Partial<Draft>) => setDraft((prev) => ({ ...prev, ...patch }));
+
+  // Fill the form from a TMDb record. The draft carries parsed values while the
+  // year/runtime inputs carry text (handleSave reads those back), so both get
+  // set here. Genres are matched by name against this catalog's own list — a
+  // TMDb genre with no counterpart here is dropped rather than invented.
+  const applyTmdb = (payload: TmdbImportPayload) => {
+    const { ids } = matchGenresByName(payload.genre_names, genres);
+    set({
+      title: payload.title,
+      description: payload.description ?? "",
+      release_year: payload.release_year,
+      runtime_seconds: payload.runtime_seconds,
+      maturity_rating: payload.maturity_rating || "NR",
+      poster_url: payload.poster_url ?? "",
+      backdrop_url: payload.backdrop_url ?? "",
+      trailer_url: payload.trailer_url ?? "",
+      genre_ids: ids,
+    });
+    setYearText(payload.release_year ? String(payload.release_year) : "");
+    setRuntimeMinutes(payload.runtime_seconds ? minutesInputFromSeconds(payload.runtime_seconds) : "");
+    setShowImport(false);
+  };
 
   const handleUploadSubtitle = async () => {
     if (!movieId || !subLang || subBusy) return;
@@ -379,6 +406,36 @@ export default function MovieEditor({ movie, genres, onClose, onSaved, onError }
             contentContainerStyle={{ gap: 16, paddingBottom: 40 }}
             keyboardShouldPersistTaps="handled"
           >
+            {!movie ? (
+              <View style={styles.importWrap}>
+                <TouchableOpacity
+                  style={[
+                    styles.importToggle,
+                    { backgroundColor: theme.card, borderColor: showImport ? GOLD : theme.cardBorder },
+                  ]}
+                  onPress={() => setShowImport((open) => !open)}
+                  activeOpacity={0.8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Search TMDb for this title"
+                >
+                  <Ionicons
+                    name="cloud-download-outline"
+                    size={15}
+                    color={showImport ? GOLD : theme.subtitle}
+                  />
+                  <Text
+                    style={[
+                      styles.importToggleText,
+                      { color: showImport ? GOLD : theme.subtitle },
+                    ]}
+                  >
+                    {showImport ? "Hide TMDb search" : "Import details from TMDb"}
+                  </Text>
+                </TouchableOpacity>
+                {showImport ? <TmdbImport onPick={applyTmdb} onError={onError} /> : null}
+              </View>
+            ) : null}
+
             <Field label="Title *">
               <TextInput
                 style={inputStyle}
@@ -792,6 +849,17 @@ const styles = StyleSheet.create({
   sheetAction: { fontSize: 14, fontWeight: "700" },
 
   form: { paddingHorizontal: 18, paddingTop: 16 },
+  importWrap: { gap: 10, marginBottom: 2 },
+  importToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 13,
+    paddingVertical: 11,
+  },
+  importToggleText: { fontSize: 12.5, fontWeight: "800" },
   input: {
     borderWidth: 1,
     borderRadius: 12,

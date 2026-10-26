@@ -98,12 +98,37 @@ supabase functions deploy send-push
 supabase functions deploy translate-subtitles
 supabase functions deploy save-transcript
 supabase functions deploy whisper-model --no-verify-jwt
+supabase functions deploy tmdb
 ```
 
 `whisper-model` must be deployed with `--no-verify-jwt`: the scanner's
 transformers.js fetches plain model files with no `Authorization` header —
 the function's path allowlist is the only boundary (it 302s to a
 presigned GET inside the private bucket, so nothing ever goes public).
+
+`tmdb` is the catalogue import proxy, and it stays JWT-verified: it reads the
+caller's own session and re-checks `profiles.role` before touching TMDb, so
+only an admin can spend the key. The key itself is a secret, never a client
+env var (`EXPO_PUBLIC_*` is compiled into the public JS):
+
+```bash
+# free key: https://www.themoviedb.org/settings/api (approve the terms)
+supabase secrets set TMDB_API_KEY=your_v3_key
+```
+
+Without the secret the function reports `configured: false` and the admin
+panel shows that instead of an empty search.
+
+In the app: **Admin Console → Catalog → New movie → "Import details from
+TMDb"**. It fills the form (title, synopsis, year, runtime, rating, artwork,
+trailer, matched genres) and nothing is written until you press Save, so you
+can still correct anything before it goes live. Genres are matched by name
+against your own genre list — a TMDb genre you haven't created is simply
+dropped.
+
+TMDb's terms require attribution on any product using its data; the line lives
+in `src/lib/tmdb.ts` (`TMDB_ATTRIBUTION`) and is rendered on the legal screens
+and in the import panel.
 
 ### 5. Backblaze B2 bucket + secrets
 
