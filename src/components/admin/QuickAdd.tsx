@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -170,9 +171,19 @@ export default function QuickAdd({ onPublished }: Props) {
       setGuess(derived);
       setStage("review");
 
+      // Nothing readable in the filename. Searching TMDb for whatever
+      // tokens survived — a resolution, a bare year, "sample" — would come
+      // back with popular films that share none of it, so the query is left
+      // empty for the admin to type rather than showing a misleading list.
+      if (!derived.title.trim()) {
+        setQuery("");
+        setSearching(false);
+        return;
+      }
+
       const term = derived.year ? `${derived.title} ${derived.year}` : derived.title;
       setQuery(term);
-      if (term.trim()) setSearching(true);
+      setSearching(true);
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Could not read that video.");
       setStage("idle");
@@ -319,64 +330,88 @@ export default function QuickAdd({ onPublished }: Props) {
 
           {!best?.best && !searching && query.trim() && results.length > 0 ? (
             <Text style={[styles.empty, { color: theme.placeholder }]}>
-              Couldn&apos;t auto-match — tap the right film below.
+              No confident match for &ldquo;{query.trim()}&rdquo; — pick the right film below, or
+              correct the search above.
             </Text>
           ) : null}
 
-          {results.map((hit) => {
-            const year = yearOf(hit.release_date);
-            const isSelected = selected?.id === hit.id;
-            return (
-              <TouchableOpacity
-                key={hit.id}
-                style={[
-                  styles.row,
-                  { borderColor: isSelected ? GOLD : theme.cardBorder, borderWidth: isSelected ? 1.5 : 1 },
-                ]}
-                onPress={() => setSelectedId(hit.id)}
-                activeOpacity={0.75}
-                disabled={stage !== "review"}
-                accessibilityRole="button"
-                accessibilityLabel={`Select ${hit.title}`}
-              >
-                {hit.poster_url ? (
-                  <Image source={{ uri: hit.poster_url }} style={styles.poster} />
-                ) : (
-                  <View
+          {guess && !guess.title.trim() && !query.trim() ? (
+            <Text style={[styles.empty, { color: theme.placeholder }]}>
+              The filename didn&apos;t contain a readable title. Type it above to search TMDb.
+            </Text>
+          ) : null}
+
+          {/* Bounded so Publish stays a short scroll under the results
+              instead of below all twenty of them. The panel itself scrolls
+              too, so a long list is never cut off. */}
+          {results.length > 0 ? (
+            <ScrollView
+              style={styles.results}
+              contentContainerStyle={styles.resultsContent}
+              nestedScrollEnabled
+            >
+              {results.map((hit) => {
+                const year = yearOf(hit.release_date);
+                const isSelected = selected?.id === hit.id;
+                return (
+                  <TouchableOpacity
+                    key={hit.id}
                     style={[
-                      styles.poster,
-                      styles.posterFallback,
-                      { backgroundColor: theme.inputBackground },
+                      styles.row,
+                      {
+                        borderColor: isSelected ? GOLD : theme.cardBorder,
+                        borderWidth: isSelected ? 1.5 : 1,
+                      },
                     ]}
+                    onPress={() => setSelectedId(hit.id)}
+                    activeOpacity={0.75}
+                    disabled={stage !== "review"}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Select ${hit.title}`}
                   >
-                    <Ionicons name="film-outline" size={18} color={theme.placeholder} />
-                  </View>
-                )}
+                    {hit.poster_url ? (
+                      <Image source={{ uri: hit.poster_url }} style={styles.poster} />
+                    ) : (
+                      <View
+                        style={[
+                          styles.poster,
+                          styles.posterFallback,
+                          { backgroundColor: theme.inputBackground },
+                        ]}
+                      >
+                        <Ionicons name="film-outline" size={18} color={theme.placeholder} />
+                      </View>
+                    )}
 
-                <View style={styles.rowBody}>
-                  <View style={styles.rowTitleLine}>
-                    <Text style={[styles.rowTitle, { color: theme.text }]} numberOfLines={1}>
-                      {hit.title}
-                    </Text>
-                    {year ? (
-                      <Text style={[styles.rowYear, { color: theme.placeholder }]}>{year}</Text>
-                    ) : null}
-                  </View>
-                  {hit.overview ? (
-                    <Text style={[styles.rowOverview, { color: theme.placeholder }]} numberOfLines={2}>
-                      {hit.overview}
-                    </Text>
-                  ) : null}
-                </View>
+                    <View style={styles.rowBody}>
+                      <View style={styles.rowTitleLine}>
+                        <Text style={[styles.rowTitle, { color: theme.text }]} numberOfLines={1}>
+                          {hit.title}
+                        </Text>
+                        {year ? (
+                          <Text style={[styles.rowYear, { color: theme.placeholder }]}>{year}</Text>
+                        ) : null}
+                      </View>
+                      {hit.overview ? (
+                        <Text
+                          style={[styles.rowOverview, { color: theme.placeholder }]}
+                          numberOfLines={2}
+                        >
+                          {hit.overview}
+                        </Text>
+                      ) : null}
+                    </View>
 
-                <Ionicons
-                  name={isSelected ? "checkmark-circle" : "ellipse-outline"}
-                  size={20}
-                  color={isSelected ? GOLD : theme.placeholder}
-                />
-              </TouchableOpacity>
-            );
-          })}
+                    <Ionicons
+                      name={isSelected ? "checkmark-circle" : "ellipse-outline"}
+                      size={20}
+                      color={isSelected ? GOLD : theme.placeholder}
+                    />
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          ) : null}
 
           {stage === "uploading" ? (
             <View style={styles.progressWrap}>
@@ -520,6 +555,12 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(232,184,74,0.12)",
   },
   autoBadgeText: { fontSize: 10.5, fontWeight: "800", color: GOLD, letterSpacing: 0.2 },
+
+  // Capped like every other list in the app (see ListSheet/QualitySheet) so
+  // the search box, the chosen row and Publish all fit without the panel
+  // growing by a row per result.
+  results: { maxHeight: 300 },
+  resultsContent: { gap: 10 },
 
   row: {
     flexDirection: "row",

@@ -254,8 +254,13 @@ export default function CatalogPanel() {
     );
   }
 
-  return (
-    <View style={styles.root}>
+  // The add flow rides inside the list header so the whole panel scrolls as
+  // one column. It used to sit above the list, where a TMDb result set taller
+  // than the panel simply overflowed it: the list was squeezed to nothing and
+  // QuickAdd had no scroller of its own, so everything past the first few
+  // rows — the Publish button included — was unreachable.
+  const listHeader = (
+    <>
       <View style={styles.addWrap}>
         {/* The only way to add a title now: upload a file, TMDb supplies the
             metadata, and it goes live on confirm. The old "New" button that
@@ -264,7 +269,9 @@ export default function CatalogPanel() {
       </View>
 
       <View style={styles.toolbar}>
-        <View style={[styles.searchBox, { backgroundColor: theme.card, borderColor: theme.inputBorder }]}>
+        <View
+          style={[styles.searchBox, { backgroundColor: theme.card, borderColor: theme.inputBorder }]}
+        >
           <Ionicons name="search" size={15} color={theme.placeholder} />
           <TextInput
             style={[styles.searchInput, { color: theme.text }]}
@@ -280,11 +287,16 @@ export default function CatalogPanel() {
           ) : null}
         </View>
       </View>
+    </>
+  );
 
+  return (
+    <View style={styles.root}>
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id}
         renderItem={renderMovie}
+        ListHeaderComponent={listHeader}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <View style={styles.center}>
@@ -326,8 +338,11 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   center: { alignItems: "center", justifyContent: "center", paddingVertical: 48, gap: 10 },
 
-  toolbar: { flexDirection: "row", gap: 10, paddingHorizontal: 16, marginBottom: 12 },
-  addWrap: { paddingHorizontal: 16, marginBottom: 14 },
+  // Both blocks now live inside the FlatList header, whose wrapper already
+  // carries the list's horizontal padding — a second inset here would push
+  // them 16px in from every other row.
+  toolbar: { flexDirection: "row", gap: 10, marginBottom: 2 },
+  addWrap: { marginBottom: 14 },
   searchBox: {
     flex: 1,
     flexDirection: "row",
