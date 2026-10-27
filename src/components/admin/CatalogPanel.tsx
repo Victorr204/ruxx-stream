@@ -23,6 +23,7 @@ import {
 import { formatRuntime } from "../../lib/format";
 import type { Genre } from "../../lib/types";
 import MovieEditor from "./MovieEditor";
+import QuickAdd from "./QuickAdd";
 
 type AlertState = {
   visible: boolean;
@@ -125,11 +126,6 @@ export default function CatalogPanel() {
     } finally {
       setBusyId(null);
     }
-  };
-
-  const openNew = () => {
-    setEditing(null);
-    setEditorOpen(true);
   };
 
   const openEdit = (movie: AdminMovie) => {
@@ -260,6 +256,13 @@ export default function CatalogPanel() {
 
   return (
     <View style={styles.root}>
+      <View style={styles.addWrap}>
+        {/* The only way to add a title now: upload a file, TMDb supplies the
+            metadata, and it goes live on confirm. The old "New" button that
+            opened a blank metadata form is gone on purpose. */}
+        <QuickAdd onPublished={() => void load()} />
+      </View>
+
       <View style={styles.toolbar}>
         <View style={[styles.searchBox, { backgroundColor: theme.card, borderColor: theme.inputBorder }]}>
           <Ionicons name="search" size={15} color={theme.placeholder} />
@@ -276,10 +279,6 @@ export default function CatalogPanel() {
             </TouchableOpacity>
           ) : null}
         </View>
-        <TouchableOpacity style={[styles.newBtn, { backgroundColor: GOLD }]} onPress={openNew} activeOpacity={0.8}>
-          <Ionicons name="add" size={17} color="#111" />
-          <Text style={styles.newBtnText}>New</Text>
-        </TouchableOpacity>
       </View>
 
       <FlatList
@@ -291,7 +290,7 @@ export default function CatalogPanel() {
           <View style={styles.center}>
             <Ionicons name="film-outline" size={36} color={theme.placeholder} />
             <Text style={[styles.emptyText, { color: theme.placeholder }]}>
-              {needle ? "No titles match that filter." : "No movies yet — tap New to add one."}
+              {needle ? "No titles match that filter." : "No movies yet — add a video above."}
             </Text>
           </View>
         }
@@ -328,6 +327,7 @@ const styles = StyleSheet.create({
   center: { alignItems: "center", justifyContent: "center", paddingVertical: 48, gap: 10 },
 
   toolbar: { flexDirection: "row", gap: 10, paddingHorizontal: 16, marginBottom: 12 },
+  addWrap: { paddingHorizontal: 16, marginBottom: 14 },
   searchBox: {
     flex: 1,
     flexDirection: "row",
@@ -339,15 +339,6 @@ const styles = StyleSheet.create({
     height: 40,
   },
   searchInput: { flex: 1, fontSize: 13, padding: 0 },
-  newBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 13,
-    borderRadius: 12,
-    height: 40,
-  },
-  newBtnText: { fontSize: 13, fontWeight: "900", color: "#111" },
 
   list: { paddingHorizontal: 16, paddingBottom: 32, gap: 10 },
 

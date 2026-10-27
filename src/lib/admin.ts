@@ -1,4 +1,5 @@
 import { getSupabase } from "./supabase";
+import type { TmdbImport } from "./tmdb";
 
 // Admin console data layer. Every query runs as the signed-in user, so RLS
 // is the real gate: the client-side admin guard in app/admin/index.jsx is
@@ -185,6 +186,39 @@ export async function saveAdminMovie(id: string | null, input: AdminMovieInput):
   }
 
   return movieId;
+}
+
+/**
+ * Publish a movie from a TMDb record and an already-uploaded video key.
+ *
+ * This is the whole "upload and forget" write path: every field a human
+ * used to type comes from TMDb, the caller supplies only the file it
+ * uploaded and the genre rows that actually exist in this catalog, and the
+ * title goes live the moment it is saved (is_active: true) because there is
+ * no editor left to press Save in afterwards.
+ */
+export async function createMovieFromTmdb(
+  tmdb: TmdbImport,
+  r2Key: string,
+  genreIds: string[]
+): Promise<string> {
+  const input: AdminMovieInput = {
+    title: tmdb.title,
+    description: tmdb.description,
+    release_year: tmdb.release_year,
+    maturity_rating: tmdb.maturity_rating,
+    runtime_seconds: tmdb.runtime_seconds,
+    poster_url: tmdb.poster_url,
+    backdrop_url: tmdb.backdrop_url,
+    trailer_url: tmdb.trailer_url,
+    r2_key_free: r2Key,
+    is_active: true,
+    is_featured: false,
+    genre_ids: genreIds,
+    premium_r2_key: null,
+    premium_stream_url: null,
+  };
+  return saveAdminMovie(null, input);
 }
 
 export async function setMovieFlags(
