@@ -236,13 +236,39 @@ async function bodyForWeb(asset: ImagePicker.ImagePickerAsset): Promise<Blob | n
 }
 
 /**
- * Opens the device video picker, applies the compression plan (native app
- * only), uploads to Backblaze B2 and resolves the stored object. Resolves
- * `"cancelled"` when the admin backs out.
+ * A video that has been chosen but not yet transferred.
+ *
+ * The split between this and uploadPickedVideo exists so that selecting a
+ * file costs nothing: pickVideo performs no network I/O at all, so an admin
+ * who changes their mind — or picks the wrong file — has not already spent
+ * their data on a transfer that will never be used.
  */
-export async function pickAndUploadVideo(
+export type PickedVideo = {
+  /** Local URI of the chosen file — valid until uploaded or discarded. */
+  uri: string;
+  /** Sanitized filename, extension preserved. */
+  name: string;
+  contentType: string;
+  originalBytes: number;
+  durationSeconds: number;
+  plan: CompressionPlan;
+  /**
+   * Web resolves the picker's blob: URL up front. That is a local read, not
+   * a network fetch, and doing it here guarantees the bytes are still
+   * available by the time the deferred upload runs.
+   */
+  webBody: Blob | null;
+};
+
+/**
+ * Opens the device video picker and reads the file locally: permission,
+ * filename, probe and compression plan. Performs no network I/O, so
+ * choosing a file consumes no data. Resolves `"cancelled"` when the admin
+ * backs out.
+ */
+export async function pickVideo(
   options: PickVideoOptions = {}
-): Promise<UploadedVideo | "cancelled"> {
+): Promise<PickedVideo | "cancelled"> {
   const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!permission.granted) {
     throw new Error("Media library permission is required to choose a video.");
@@ -262,6 +288,49 @@ export async function pickAndUploadVideo(
     throw new Error("Unsupported video format — use MP4, MOV, MKV or WebM.");
   }
 
+  options.onProgress?.({ stage: "probing", fraction: 0, label: "Reading video info…" });
+
+  let probe: VideoProbe;
+  try {
+    probe = await probeVideo(asset.uri, {
+      duration: asset.duration,
+      sizeBytes: asset.fileSize,
+    });
+  } catch {
+    probe = {
+      durationSeconds: 0,
+      width: 0,
+      height: 0,
+      sizeBytes: asset.fileSize ?? 0,
+    };
+  }
+  if (probe.durationSeconds > 0) options.onProbed?.(probe.durationSeconds);
+
+  const originalBytes = probe.sizeBytes || asset.fileSize || 0;
+
+  return {
+    uri: asset.uri,
+    name: normalized.name,
+    contentType: normalized.contentType,
+    originalBytes,
+    durationSeconds: probe.durationSeconds,
+    plan: planCompression({
+      sizeBytes: originalBytes,
+      durationSeconds: probe.durationSeconds,
+    }),
+    webBody: Platform.OS === "web" ? await bodyForWeb(asset) : null,
+  };
+}
+
+/**
+ * Compresses a picked file locally and then uploads it. This is the only
+ * step that consumes data, which is why it is kept deliberately apart from
+ * pickVideo. Resolves the stored object.
+ */
+export async function uploadPickedVideo(
+  picked: PickedVideo,
+  options: PickVideoOptions = {}
+): Promise<UploadedVideo> {
   const job: ActiveJob = { cancelled: false };
   activeJob = job;
   let tempUri: string | null = null;
@@ -274,33 +343,12 @@ export async function pickAndUploadVideo(
   };
 
   try {
-    emit({ stage: "probing", fraction: 0, label: "Reading video info…" });
-    let probe: VideoProbe;
-    try {
-      probe = await probeVideo(asset.uri, {
-        duration: asset.duration,
-        sizeBytes: asset.fileSize,
-      });
-    } catch {
-      probe = {
-        durationSeconds: 0,
-        width: 0,
-        height: 0,
-        sizeBytes: asset.fileSize ?? 0,
-      };
-    }
-    if (probe.durationSeconds > 0) options.onProbed?.(probe.durationSeconds);
-    throwIfCancelled();
+    const { plan } = picked;
+    const originalBytes = picked.originalBytes;
 
-    const originalBytes = probe.sizeBytes || asset.fileSize || 0;
-    const plan = planCompression({
-      sizeBytes: originalBytes,
-      durationSeconds: probe.durationSeconds,
-    });
-
-    let sourceUri = asset.uri;
-    let uploadName = normalized.name;
-    let contentType = normalized.contentType;
+    let sourceUri = picked.uri;
+    let uploadName = picked.name;
+    let contentType = picked.contentType;
     let compressed = false;
     let compressionWarning: string | undefined;
 
@@ -345,9 +393,9 @@ export async function pickAndUploadVideo(
         if (job.cancelled || isUploadCancelled(error)) throw new UploadCancelledError();
         compressionWarning = error instanceof Error ? error.message : "Compression failed.";
         compressed = false;
-        sourceUri = asset.uri;
-        uploadName = normalized.name;
-        contentType = normalized.contentType;
+        sourceUri = picked.uri;
+        uploadName = picked.name;
+        contentType = picked.contentType;
       } finally {
         job.cancel = undefined;
       }
@@ -359,8 +407,7 @@ export async function pickAndUploadVideo(
     const ticket = await requestTicket(uploadName, contentType);
     throwIfCancelled();
 
-    let webBody: Blob | null = null;
-    if (Platform.OS === "web") webBody = await bodyForWeb(asset);
+    const webBody = picked.webBody;
     throwIfCancelled();
 
     emit({ stage: "uploading", fraction: 0, label: "Uploading… 0%" });
@@ -412,7 +459,7 @@ export async function pickAndUploadVideo(
       originalBytes,
       outputBytes,
       compressed,
-      durationSeconds: probe.durationSeconds,
+      durationSeconds: picked.durationSeconds,
       plan,
       compressionWarning,
     };
@@ -422,6 +469,21 @@ export async function pickAndUploadVideo(
   } finally {
     if (activeJob === job) activeJob = null;
   }
+}
+
+/**
+ * Convenience wrapper that picks and uploads in one go — the old behaviour.
+ *
+ * Kept for MovieEditor, whose edit form treats the upload as part of
+ * submitting the form. QuickAdd calls pickVideo/uploadPickedVideo
+ * separately so that merely choosing a file costs no data.
+ */
+export async function pickAndUploadVideo(
+  options: PickVideoOptions = {}
+): Promise<UploadedVideo | "cancelled"> {
+  const picked = await pickVideo(options);
+  if (picked === "cancelled") return "cancelled";
+  return uploadPickedVideo(picked, options);
 }
 
 // Poster/backdrop images go through Supabase Storage's public `artwork`

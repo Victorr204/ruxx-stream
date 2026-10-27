@@ -16,7 +16,9 @@ import { formatBytes } from "../../lib/downloads";
 import {
   cancelActiveUpload,
   isUploadCancelled,
-  pickAndUploadVideo,
+  pickVideo,
+  uploadPickedVideo,
+  type PickedVideo,
   type UploadedVideo,
   type UploadProgressEvent,
 } from "../../lib/upload";
@@ -41,8 +43,15 @@ import { bestCandidate, guessTitleFromFilename, type TitleGuess } from "../../li
 // auto-match would publish another film's metadata as if it were correct, so
 // the guess is always shown with its poster and can be replaced by tapping a
 // different result before anything is written.
+//
+// Choosing a file and sending it are deliberately separate steps. pickVideo
+// reads the name, duration and compression plan locally and never touches the
+// network, so browsing candidates costs nothing; the transfer — the only part
+// that consumes data — runs when Publish is pressed, immediately after the
+// compression that prepares it. A title the admin abandons mid-review
+// therefore costs no delivery.
 
-type Stage = "idle" | "uploading" | "review" | "saving" | "done";
+type Stage = "idle" | "picking" | "review" | "uploading" | "saving" | "done";
 
 type Props = {
   /** Called after a title is live, so the caller can refresh its list. */
@@ -56,6 +65,9 @@ export default function QuickAdd({ onPublished }: Props) {
 
   const [stage, setStage] = useState<Stage>("idle");
   const [progress, setProgress] = useState<UploadProgressEvent | null>(null);
+  // The chosen file, still only on the device. It becomes `uploaded` once the
+  // transfer finally runs, at publish time.
+  const [picked, setPicked] = useState<PickedVideo | null>(null);
   const [uploaded, setUploaded] = useState<UploadedVideo | null>(null);
   const [guess, setGuess] = useState<TitleGuess | null>(null);
 
@@ -112,11 +124,12 @@ export default function QuickAdd({ onPublished }: Props) {
     return results.find((hit) => hit.id === wanted) ?? null;
   }, [results, selectedId, best]);
 
-  const busy = stage === "uploading" || stage === "saving";
+  const busy = stage === "picking" || stage === "uploading" || stage === "saving";
 
   const reset = () => {
     setStage("idle");
     setProgress(null);
+    setPicked(null);
     setUploaded(null);
     setGuess(null);
     setQuery("");
@@ -136,21 +149,24 @@ export default function QuickAdd({ onPublished }: Props) {
     setUploadError(null);
     setPublishError(null);
     setProgress(null);
+    setPicked(null);
     setUploaded(null);
     setGuess(null);
     setResults([]);
     setSelectedId(null);
-    setStage("uploading");
+    setStage("picking");
 
     try {
-      const picked = await pickAndUploadVideo({ compress: true, onProgress: setProgress });
-      if (picked === "cancelled") {
+      // Local only: no ticket is requested, nothing is compressed and no
+      // bytes leave the device. The file is opened solely to decode its name.
+      const chosen = await pickVideo();
+      if (chosen === "cancelled") {
         setStage("idle");
         return;
       }
 
-      const derived = guessTitleFromFilename(picked.name);
-      setUploaded(picked);
+      const derived = guessTitleFromFilename(chosen.name);
+      setPicked(chosen);
       setGuess(derived);
       setStage("review");
 
@@ -158,30 +174,39 @@ export default function QuickAdd({ onPublished }: Props) {
       setQuery(term);
       if (term.trim()) setSearching(true);
     } catch (e) {
-      if (isUploadCancelled(e)) {
-        setStage("idle");
-        return;
-      }
-      setUploadError(e instanceof Error ? e.message : "Could not upload that video.");
+      setUploadError(e instanceof Error ? e.message : "Could not read that video.");
       setStage("idle");
     }
   };
 
   const handlePublish = async () => {
-    if (busy || !selected || !uploaded) return;
+    if (busy || !selected || !picked) return;
     setPublishError(null);
-    setStage("saving");
+    setProgress(null);
+    setStage("uploading");
 
     try {
+      // The one data-consuming step, held back until the admin has confirmed
+      // the match. A retry after a failed metadata write reuses the object
+      // already in storage instead of paying for the same delivery twice.
+      const stored =
+        uploaded ?? (await uploadPickedVideo(picked, { compress: true, onProgress: setProgress }));
+      setUploaded(stored);
+      setStage("saving");
+
       const record = await fetchTmdbImport(selected.id);
       // A genre with no counterpart in this catalog is dropped rather than
       // invented, so a missing genre row never blocks a publish.
       const genres = await fetchGenres().catch(() => []);
       const { ids } = matchGenresByName(record.genre_names, genres);
-      await createMovieFromTmdb(record, uploaded.key, ids);
+      await createMovieFromTmdb(record, stored.key, ids);
       setStage("done");
       onPublished();
     } catch (e) {
+      if (isUploadCancelled(e)) {
+        setStage("review");
+        return;
+      }
       setPublishError(e instanceof Error ? e.message : "Could not publish that title.");
       setStage("review");
     }
@@ -202,8 +227,8 @@ export default function QuickAdd({ onPublished }: Props) {
         <Text style={[styles.headTitle, { color: theme.text }]}>Add a video</Text>
       </View>
       <Text style={[styles.headHint, { color: theme.placeholder }]}>
-        Pick a file — title, artwork, synopsis and genres come from TMDb automatically. Nothing to
-        type.
+        Choosing a file costs no data — it stays on your device until you hit Publish. Title,
+        artwork, synopsis and genres then arrive from TMDb. Nothing to type.
       </Text>
 
       {stage === "idle" ? (
@@ -222,38 +247,25 @@ export default function QuickAdd({ onPublished }: Props) {
         </>
       ) : null}
 
-      {stage === "uploading" ? (
-        <View style={styles.progressWrap}>
-          <View style={styles.progressRow}>
-            <View style={[styles.progressTrack, { backgroundColor: theme.inputBorder }]}>
-              <View style={[styles.progressFill, { width: `${pct}%` }]} />
-            </View>
-            <TouchableOpacity
-              onPress={cancelActiveUpload}
-              activeOpacity={0.7}
-              style={styles.cancelBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel upload"
-            >
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-          <Text style={[styles.progressLabel, { color: theme.placeholder }]} numberOfLines={2}>
-            {progress?.label ?? "Working…"}
+      {stage === "picking" ? (
+        <View style={styles.pickingRow}>
+          <ActivityIndicator size="small" color={GOLD} />
+          <Text style={[styles.pickingText, { color: theme.placeholder }]}>
+            Choose a video file — nothing is uploaded yet.
           </Text>
         </View>
       ) : null}
 
-      {stage === "review" || stage === "saving" ? (
+      {stage === "review" || stage === "uploading" || stage === "saving" ? (
         <>
-          {uploaded ? (
+          {picked ? (
             <View style={styles.fileRow}>
               <Ionicons name="videocam-outline" size={13} color={GOLD} />
               <Text style={[styles.fileName, { color: theme.text }]} numberOfLines={1}>
-                {uploaded.name}
+                {picked.name}
               </Text>
               <Text style={[styles.fileSize, { color: theme.placeholder }]}>
-                {formatBytes(uploaded.outputBytes)}
+                {formatBytes(uploaded?.outputBytes ?? picked.originalBytes)}
               </Text>
             </View>
           ) : null}
@@ -268,6 +280,7 @@ export default function QuickAdd({ onPublished }: Props) {
             <TextInput
               style={[styles.input, { color: theme.text }]}
               value={query}
+              editable={stage === "review"}
               onChangeText={(value) => {
                 setQuery(value);
                 if (!value.trim()) {
@@ -322,6 +335,7 @@ export default function QuickAdd({ onPublished }: Props) {
                 ]}
                 onPress={() => setSelectedId(hit.id)}
                 activeOpacity={0.75}
+                disabled={stage !== "review"}
                 accessibilityRole="button"
                 accessibilityLabel={`Select ${hit.title}`}
               >
@@ -364,7 +378,27 @@ export default function QuickAdd({ onPublished }: Props) {
             );
           })}
 
-          {selected ? (
+          {stage === "uploading" ? (
+            <View style={styles.progressWrap}>
+              <View style={styles.progressRow}>
+                <View style={[styles.progressTrack, { backgroundColor: theme.inputBorder }]}>
+                  <View style={[styles.progressFill, { width: `${pct}%` }]} />
+                </View>
+                <TouchableOpacity
+                  onPress={cancelActiveUpload}
+                  activeOpacity={0.7}
+                  style={styles.cancelBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel upload"
+                >
+                  <Text style={styles.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={[styles.progressLabel, { color: theme.placeholder }]} numberOfLines={2}>
+                {progress?.label ?? "Sending the video…"}
+              </Text>
+            </View>
+          ) : selected ? (
             <TouchableOpacity
               style={[styles.primaryBtn, { backgroundColor: GOLD }]}
               onPress={() => void handlePublish()}
@@ -376,7 +410,7 @@ export default function QuickAdd({ onPublished }: Props) {
               {stage === "saving" ? (
                 <ActivityIndicator size="small" color="#111" />
               ) : (
-                <Ionicons name="checkmark-circle-outline" size={16} color="#111" />
+                <Ionicons name="cloud-upload-outline" size={16} color="#111" />
               )}
               <Text style={styles.primaryBtnText} numberOfLines={1}>
                 {stage === "saving"
@@ -448,6 +482,9 @@ const styles = StyleSheet.create({
 
   error: { fontSize: 12, fontWeight: "600", color: "#ef6c6c" },
   empty: { fontSize: 12, lineHeight: 16 },
+
+  pickingRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  pickingText: { fontSize: 12, lineHeight: 16, flexShrink: 1 },
 
   progressWrap: { gap: 8 },
   progressRow: { flexDirection: "row", alignItems: "center", gap: 10 },
